@@ -51,10 +51,11 @@ jobs:
           path: qwentts.cpp
           submodules: recursive
 
-      - name: Build qwen.dll
+      - name: Build qwen.dll (CUDA + Vulkan — Metal is macOS-only)
         working-directory: qwentts.cpp
         run: |
-          cmake -B build -DQWEN_SHARED=ON -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DQWEN_SHARED=ON -DCMAKE_BUILD_TYPE=Release `
+            -DGGML_CUDA=ON -DGGML_VULKAN=ON
           cmake --build build --config Release
 
       # ── 5. Install 7-Zip for password-protected archive ────────

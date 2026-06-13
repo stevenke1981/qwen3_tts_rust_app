@@ -111,7 +111,7 @@ enum Device {
 }
 
 impl Device {
-    fn ggml_backend_env(&self) -> Option<&'static str> {
+    fn backend_str(&self) -> Option<&'static str> {
         match self {
             Device::Auto => None,
             Device::Cpu => Some("CPU"),
@@ -127,6 +127,7 @@ enum BuildTarget {
     Cpu,
     Cuda,
     Vulkan,
+    Metal,
     All,
 }
 
@@ -204,7 +205,7 @@ fn main() -> Result<()> {
                 instruct,
                 ref_wav,
                 ref_text,
-                ggml_backend: device.ggml_backend_env().map(str::to_string),
+                ggml_backend: device.backend_str().map(str::to_string),
             };
 
             let custom_lib = qwen_tts_bin.as_deref();
@@ -305,6 +306,7 @@ fn print_setup_script_bash(target: BuildTarget) {
         BuildTarget::Cpu => "./buildcpu.sh",
         BuildTarget::Cuda => "./buildcuda.sh",
         BuildTarget::Vulkan => "./buildvulkan.sh",
+        BuildTarget::Metal => "./buildmetal.sh",
         BuildTarget::All => "./buildall.sh",
     };
 
@@ -354,6 +356,7 @@ fn print_setup_script_powershell(target: BuildTarget) {
         BuildTarget::Cpu => "./buildcpu.bat",
         BuildTarget::Cuda => "./buildcuda.bat",
         BuildTarget::Vulkan => "./buildvulkan.bat",
+        BuildTarget::Metal => "./buildmetal.bat",
         BuildTarget::All => "./buildall.bat",
     };
 
@@ -378,7 +381,7 @@ Write-Host "=== Step 2: Build qwentts.cpp ({build_name}) ===" -ForegroundColor C
 # On Windows, qwentts.cpp likely uses CMake directly:
 # mkdir build -Force | Out-Null
 # cd build
-# cmake .. -DGGML_{backend_flag}=ON
+# cmake .. -DGGML_CUDA=ON -DGGML_VULKAN=ON
 # cmake --build . --config Release
 # Or use the provided build script:
 cd ..
@@ -386,11 +389,17 @@ if (Test-Path "qwentts.cpp/{build_script}") {{
     & "qwentts.cpp\{build_script}"
 }} else {{
     Write-Host "No Windows build script found; using CMake directly..." -ForegroundColor Yellow
-    $bb = if ("{backend}" -eq "cuda") {{ "OFF" }} else {{ "ON" }}
     Push-Location qwentts.cpp
     New-Item -ItemType Directory -Path build -Force | Out-Null
     Set-Location build
-    cmake .. -DGGML_CUDA={backend_flag}
+    $ggml_flags = switch ("{backend}") {{
+        "cuda"   {{ "-DGGML_CUDA=ON" }}
+        "vulkan" {{ "-DGGML_VULKAN=ON" }}
+        "metal"  {{ "-DGGML_METAL=ON" }}
+        "all"    {{ "-DGGML_CUDA=ON -DGGML_VULKAN=ON -DGGML_METAL=ON" }}
+        default  {{ "" }}
+    }}
+    cmake .. -DQWEN_SHARED=ON $ggml_flags
     cmake --build . --config Release
     Pop-Location
 }}
@@ -412,11 +421,6 @@ Write-Host "`n✅ Setup complete! Run 'cargo run -- synth --help' for more optio
 "#,
         build_name = format!("{:?}", target).to_lowercase(),
         backend = format!("{:?}", target).to_lowercase(),
-        backend_flag = if matches!(target, BuildTarget::Cuda) {
-            "ON"
-        } else {
-            "OFF"
-        },
         build_script = build_script,
     );
 }

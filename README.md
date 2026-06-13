@@ -175,20 +175,50 @@ hf_repo = "Serveurperso/Qwen3-TTS-GGUF"  # HF repo for downloads
 
 ---
 
-## Build qwentts.cpp (setup script)
+## GPU acceleration
 
-Generate a setup script for your platform:
+The app supports three GPU backends via the `--device` flag:
+
+| Backend | GPU | `--device` value | CMake flag |
+|---------|-----|-------------------|------------|
+| CUDA | NVIDIA | `cuda0` | `-DGGML_CUDA=ON` |
+| Vulkan | AMD / Intel / NVIDIA | `vulkan0` | `-DGGML_VULKAN=ON` |
+| Metal | Apple Silicon (macOS) | `metal` | `-DGGML_METAL=ON` |
+| CPU | Any | `cpu` | (none) |
+| Auto | Best available | `auto` | (all flags enabled) |
+
+Select the backend at runtime with `--device`:
 
 ```bash
-# CUDA
+cargo run --release -- synth \
+  --text "Hello" --out out.wav \
+  --device cuda0   # or vulkan0, metal, cpu, auto
+```
+
+Both the CLI (process) and FFI (qwen.dll) paths respect `--device`.
+
+## Build qwentts.cpp (setup script)
+
+Generate a setup script for your platform and backend:
+
+```bash
+# CUDA (NVIDIA)
 cargo run -- setup-script --target cuda > setup.sh
+bash setup.sh
+
+# Vulkan (AMD / Intel)
+cargo run -- setup-script --target vulkan > setup.sh
+bash setup.sh
+
+# All GPU backends (recommended — single binary, runtime selection)
+cargo run -- setup-script --target all > setup.sh
 bash setup.sh
 
 # CPU only
 cargo run -- setup-script --target cpu > setup.sh
 bash setup.sh
 
-# Windows PowerShell
+# Windows PowerShell (CUDA example)
 cargo run -- setup-script --target cuda --powershell > setup.ps1
 powershell -File setup.ps1
 ```

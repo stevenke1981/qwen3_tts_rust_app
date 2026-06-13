@@ -43,7 +43,8 @@ pub enum QtLogLevel {
     Error = 3,
 }
 
-/// Initialisation parameters.
+/// Initialisation parameters, matching `struct qt_init_params` from qwen.h.
+/// ABI v3 adds `backend` and `n_gpu_layers` at the end.
 #[repr(C)]
 pub(crate) struct QtInitParamsRaw {
     abi_version: i32,
@@ -51,6 +52,9 @@ pub(crate) struct QtInitParamsRaw {
     codec_path: *const i8,
     use_fa: bool,
     clamp_fp16: bool,
+    // ABI v3 — set to null / -1 for defaults
+    backend: *const i8,
+    n_gpu_layers: i32,
 }
 
 /// Output audio buffer.
@@ -294,30 +298,47 @@ impl QwenLibrary {
         }
     }
 
-    /// Initialize a context with GGUF model paths.
+    /// Initialise a new context.
+    ///
+    /// `backend` selects the GGML compute backend:
+    /// - `None` → auto-detect (same as "auto")
+    /// - `Some("CUDA0")`, `Some("Vulkan0")`, `Some("Metal")`, `Some("CPU")`
+    ///
+    /// `n_gpu_layers` controls how many layers are placed on the GPU:
+    /// - `-1` → all layers (default)
+    /// - `0`  → CPU only
+    /// - `N`  → first N layers on GPU (advisory, follow-up)
     pub fn init(
         &self,
         talker_path: &str,
         codec_path: &str,
         use_fa: bool,
         clamp_fp16: bool,
+        backend: Option<&str>,
+        n_gpu_layers: i32,
     ) -> Result<*mut QtContext, QwenFfiError> {
         let talker_c = CString::new(talker_path)
             .map_err(|_| QwenFfiError::InvalidParams("talker_path contains null byte".into()))?;
         let codec_c = CString::new(codec_path)
             .map_err(|_| QwenFfiError::InvalidParams("codec_path contains null byte".into()))?;
+        let backend_c = backend
+            .map(|s| CString::new(s))
+            .transpose()
+            .map_err(|_| QwenFfiError::InvalidParams("backend contains null byte".into()))?;
 
         let mut params = QtInitParamsRaw {
-            abi_version: 2, // QT_ABI_VERSION
+            abi_version: 3,          // QT_ABI_VERSION
             talker_path: talker_c.as_ptr(),
             codec_path: codec_c.as_ptr(),
             use_fa,
             clamp_fp16,
+            backend: backend_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+            n_gpu_layers,
         };
 
         unsafe {
             (self.qt_init_default_params)(&mut params);
-            // Override paths (defaults set to NULL by the lib)
+            // Override paths and backend (defaults set by the lib)
             params.talker_path = talker_c.as_ptr();
             params.codec_path = codec_c.as_ptr();
 
@@ -598,7 +619,14 @@ impl super::qwentts_cli::Synthesizer for QwenFfiRunner {
 
         let ctx = self
             .lib
-            .init(&talker_str, &codec_str, true, false)
+            .init(
+                &talker_str,
+                &codec_str,
+                true,
+                false,
+                req.ggml_backend.as_deref(),  // GPU backend selection
+                -1,                            // n_gpu_layers: all
+            )
             .map_err(|e| anyhow::anyhow!("qwen init failed: {e}"))?;
 
         let result = (|| -> anyhow::Result<super::qwentts_cli::SynthesisOutput> {
