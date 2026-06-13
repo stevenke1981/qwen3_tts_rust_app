@@ -39,7 +39,7 @@ pub enum SynthesisOutput {
 }
 
 /// Interface for TTS synthesis backends.
-pub trait Synthesizer {
+pub trait Synthesizer: Send {
     /// Run TTS synthesis and return the output.
     fn synthesize(&self, req: &QwenTtsRequest) -> Result<SynthesisOutput>;
 }

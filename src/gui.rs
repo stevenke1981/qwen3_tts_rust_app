@@ -336,7 +336,7 @@ impl QwenTtsApp {
 
         let log = self.log.clone();
         let ctx_clone = ctx.clone();
-        let out_path = req.out.clone();
+        let _out_path = req.out.clone();
 
         self.is_generating = true;
         self.log.push("Starting generation...".into());
