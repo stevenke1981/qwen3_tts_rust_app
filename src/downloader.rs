@@ -3,7 +3,7 @@ use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use reqwest::blocking::Client;
 use std::{
     fs,
-    io::{Read, Write},
+    io::{BufRead, Read, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -111,7 +111,6 @@ pub fn download_hf_file(
     Ok(out_path)
 }
 
-#[allow(dead_code)]
 pub const DEFAULT_REVISION: &str = "main";
 
 /// The default Qwen3-TTS model files to download.
@@ -123,7 +122,6 @@ pub const DEFAULT_FILES: &[&str] = &[
 pub const DEFAULT_REPO: &str = "Serveurperso/Qwen3-TTS-GGUF";
 
 /// Download all default models
-#[allow(dead_code)]
 pub fn download_default_models(out_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for file in DEFAULT_FILES {
@@ -142,6 +140,57 @@ pub fn print_summary(paths: &[PathBuf]) {
             .unwrap_or(HumanBytes(0));
         println!("  {}  {}", size, p.display());
     }
+}
+
+/// Prompt the user with a yes/no question. Returns Ok(true) for Y/yes/empty, Ok(false) for N/no.
+/// In non-interactive environments (piped stdin, tests), returns Ok(false) without prompting.
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        // Non-interactive: default to no to avoid hanging on tests/pipelines
+        return Ok(false);
+    }
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    print!("{} [Y/n]: ", prompt);
+    stdout.flush()?;
+    let mut input = String::new();
+    stdin.lock().read_line(&mut input)?;
+    let trimmed = input.trim().to_lowercase();
+    Ok(trimmed.is_empty() || trimmed == "y" || trimmed == "yes")
+}
+
+/// Check whether default model files exist under `out_dir`.
+/// If any are missing, prompt the user and download them on confirmation.
+pub fn ensure_default_models(out_dir: &Path, _repo: &str) -> Result<()> {
+    let missing: Vec<&str> = DEFAULT_FILES
+        .iter()
+        .filter(|f| !out_dir.join(f).exists())
+        .copied()
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    println!(
+        "Default model files not found in '{}':",
+        out_dir.display()
+    );
+    for f in &missing {
+        println!("  - {f}");
+    }
+    println!("These files are required for TTS synthesis (~2 GB total).");
+
+    if !prompt_yes_no("Download now?")? {
+        anyhow::bail!(
+            "Download cancelled. Run `cargo run -- download` manually to download models."
+        );
+    }
+
+    let paths = download_default_models(out_dir)?;
+    print_summary(&paths);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -163,5 +212,21 @@ mod tests {
         let expected = "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-1.7b-base-Q8_0.gguf";
         let actual = format!("https://huggingface.co/{repo}/resolve/{rev}/{file}");
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_ensure_default_models_all_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        for f in DEFAULT_FILES {
+            let path = dir.path().join(f);
+            std::fs::write(&path, b"dummy content").unwrap();
+        }
+        assert!(ensure_default_models(dir.path(), DEFAULT_REPO).is_ok());
+    }
+
+    #[test]
+    fn test_ensure_default_models_some_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(ensure_default_models(dir.path(), DEFAULT_REPO).is_err());
     }
 }
