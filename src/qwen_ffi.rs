@@ -373,93 +373,6 @@ impl QwenLibrary {
         Ok(samples)
     }
 
-    /// Helper to build a QtTtsParamsRaw from fields.
-    #[allow(clippy::too_many_arguments)]
-    pub fn build_tts_params(
-        &self,
-        text: &str,
-        lang: Option<&str>,
-        instruct: Option<&str>,
-        speaker: Option<&str>,
-        seed: i64,
-        max_new_tokens: i32,
-        do_sample: bool,
-        temperature: f32,
-        top_k: i32,
-        top_p: f32,
-        repetition_penalty: f32,
-    ) -> Result<QtTtsParamsRaw, QwenFfiError> {
-        let text_c = CString::new(text)
-            .map_err(|_| QwenFfiError::InvalidParams("text contains null byte".into()))?;
-        let lang_c = lang
-            .map(|s| CString::new(s))
-            .transpose()
-            .map_err(|_| QwenFfiError::InvalidParams("lang contains null byte".into()))?;
-        let instruct_c = instruct
-            .map(|s| CString::new(s))
-            .transpose()
-            .map_err(|_| QwenFfiError::InvalidParams("instruct contains null byte".into()))?;
-        let speaker_c = speaker
-            .map(|s| CString::new(s))
-            .transpose()
-            .map_err(|_| QwenFfiError::InvalidParams("speaker contains null byte".into()))?;
-
-        let mut params = QtTtsParamsRaw {
-            abi_version: 2,
-            text: text_c.as_ptr(),
-            lang: lang_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
-            instruct: instruct_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
-            speaker: speaker_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
-            ref_audio_24k: std::ptr::null(),
-            ref_n_samples: 0,
-            ref_text: std::ptr::null(),
-            seed,
-            max_new_tokens,
-            do_sample,
-            temperature,
-            top_k,
-            top_p,
-            repetition_penalty,
-            subtalker_do_sample: do_sample,
-            subtalker_temperature: temperature,
-            subtalker_top_k: top_k,
-            subtalker_top_p: top_p,
-            dump_dir: std::ptr::null(),
-            cancel: None,
-            cancel_user_data: std::ptr::null_mut(),
-            on_chunk: None,
-            on_chunk_user_data: std::ptr::null_mut(),
-            codec_chunk_sec: 24.0,
-            codec_left_context_sec: 2.0,
-            ref_spk_emb: std::ptr::null(),
-            ref_spk_dim: 0,
-            ref_codes: std::ptr::null(),
-            ref_t: 0,
-        };
-
-        unsafe {
-            (self.qt_tts_default_params)(&mut params);
-            // Re-override fields that default_params may have set
-            params.text = text_c.as_ptr();
-            params.lang = lang_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-            params.instruct = instruct_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-            params.speaker = speaker_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-            params.seed = seed;
-            params.max_new_tokens = max_new_tokens;
-            params.do_sample = do_sample;
-            params.temperature = temperature;
-            params.top_k = top_k;
-            params.top_p = top_p;
-            params.repetition_penalty = repetition_penalty;
-            params.subtalker_do_sample = do_sample;
-            params.subtalker_temperature = temperature;
-            params.subtalker_top_k = top_k;
-            params.subtalker_top_p = top_p;
-        }
-
-        Ok(params)
-    }
-
     /// Get the last error message on the calling thread.
     fn last_error(&self) -> String {
         unsafe {
@@ -472,7 +385,8 @@ impl QwenLibrary {
     }
 }
 
-// Keep params alive until synthesis completes (CStrings must not be dropped early)
+// Keep params alive until synthesis completes (CStrings must not be dropped early,
+// streaming callback wrapper must stay valid for the C call duration).
 #[doc(hidden)]
 pub struct OwnedTtsParams {
     pub raw: QtTtsParamsRaw,
@@ -480,9 +394,15 @@ pub struct OwnedTtsParams {
     _lang: Option<CString>,
     _instruct: Option<CString>,
     _speaker: Option<CString>,
+    _streaming_wrapper: Option<Box<CbWrapper>>,
 }
 
 impl OwnedTtsParams {
+    /// Build synthesis params.
+    ///
+    /// If `streaming` is `Some`, sets up `on_chunk` + `on_chunk_user_data`
+    /// so `qt_synthesize` emits audio chunks via the provided callback.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         lib: &QwenLibrary,
         text: &str,
@@ -490,6 +410,7 @@ impl OwnedTtsParams {
         instruct: Option<&str>,
         speaker: Option<&str>,
         seed: i64,
+        streaming: Option<StreamingConfig>,
     ) -> Result<Self, QwenFfiError> {
         let text_c = CString::new(text)
             .map_err(|_| QwenFfiError::InvalidParams("text contains null byte".into()))?;
@@ -505,6 +426,15 @@ impl OwnedTtsParams {
             .map(|s| CString::new(s))
             .transpose()
             .map_err(|_| QwenFfiError::InvalidParams("speaker contains null byte".into()))?;
+
+        // Extract chunk config before consuming `streaming` for the callback box
+        let (ccs, cls) = streaming
+            .as_ref()
+            .map(|s| (s.chunk_duration_sec, s.left_context_sec))
+            .unwrap_or((24.0, 2.0));
+
+        // Prepare streaming callback (heap-allocate wrapper, pass pointer to C)
+        let streaming_wrapper = streaming.map(|sc| Box::new(CbWrapper { cb: sc.callback }));
 
         let mut raw = QtTtsParamsRaw {
             abi_version: 2,
@@ -529,10 +459,16 @@ impl OwnedTtsParams {
             dump_dir: std::ptr::null(),
             cancel: None,
             cancel_user_data: std::ptr::null_mut(),
-            on_chunk: None,
-            on_chunk_user_data: std::ptr::null_mut(),
-            codec_chunk_sec: 24.0,
-            codec_left_context_sec: 2.0,
+            on_chunk: streaming_wrapper
+                .as_ref()
+                .map(|_| audio_chunk_trampoline as unsafe extern "C" fn(_, _, _) -> bool),
+            on_chunk_user_data: streaming_wrapper
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |w| {
+                    Box::as_ref(w) as *const CbWrapper as *mut std::ffi::c_void
+                }),
+            codec_chunk_sec: ccs,
+            codec_left_context_sec: cls,
             ref_spk_emb: std::ptr::null(),
             ref_spk_dim: 0,
             ref_codes: std::ptr::null(),
@@ -542,12 +478,15 @@ impl OwnedTtsParams {
         unsafe {
             (lib.qt_tts_default_params)(&mut raw);
         }
-        // Re-override
+        // Re-override fields that default_params overwrote
         raw.text = text_c.as_ptr();
         raw.lang = lang_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
         raw.instruct = instruct_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
         raw.speaker = speaker_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
         raw.seed = seed;
+        if streaming_wrapper.is_some() {
+            raw.on_chunk = Some(audio_chunk_trampoline as unsafe extern "C" fn(_, _, _) -> bool);
+        }
 
         Ok(Self {
             raw,
@@ -555,6 +494,7 @@ impl OwnedTtsParams {
             _lang: lang_c,
             _instruct: instruct_c,
             _speaker: speaker_c,
+            _streaming_wrapper: streaming_wrapper,
         })
     }
 }
@@ -568,6 +508,38 @@ fn lib_name() -> &'static str {
     } else {
         "libqwen.so"
     }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Streaming support
+// ═══════════════════════════════════════════════════════════════
+
+/// Configuration for streaming TTS synthesis via `qt_audio_chunk_cb`.
+///
+/// When provided, `qt_synthesize` runs in streaming mode: audio chunks
+/// are emitted through `callback` as they are decoded. The callback
+/// receives mono f32 PCM samples at 24 kHz. Return `true` to continue
+/// or `false` to cancel (same as `CancelCb`).
+pub struct StreamingConfig {
+    pub callback: Box<dyn FnMut(&[f32]) -> bool + Send>,
+    pub chunk_duration_sec: f32,
+    pub left_context_sec: f32,
+}
+
+/// Thin wrapper heap-allocated so the C trampoline gets a stable pointer.
+struct CbWrapper {
+    cb: Box<dyn FnMut(&[f32]) -> bool + Send>,
+}
+
+/// `extern "C"` trampoline called by qwen library for each audio chunk.
+unsafe extern "C" fn audio_chunk_trampoline(
+    samples: *const f32,
+    n_samples: i32,
+    user_data: *mut std::ffi::c_void,
+) -> bool {
+    let wrapper = &mut *(user_data as *mut CbWrapper);
+    let slice = std::slice::from_raw_parts(samples, n_samples as usize);
+    (wrapper.cb)(slice)
 }
 
 /// FFI-based synthesizer using the qwen shared library.
@@ -636,7 +608,8 @@ impl super::qwentts_cli::Synthesizer for QwenFfiRunner {
                 Some(&req.lang),
                 req.instruct.as_deref(),
                 req.speaker.as_deref(),
-                -1, // random seed
+                -1,   // random seed
+                None, // buffered mode (no streaming callback)
             )?;
 
             let samples = self.lib.synthesize(ctx, &params.raw)?;
