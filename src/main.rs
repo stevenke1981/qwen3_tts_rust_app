@@ -130,6 +130,16 @@ enum BuildTarget {
     All,
 }
 
+/// Returns true if the given path matches one of the built-in default model paths.
+fn is_default_model_path(path: &Path) -> bool {
+    let defaults: &[&str] = &[
+        "models/qwen-talker-1.7b-base-Q8_0.gguf",
+        "models/qwen-tokenizer-12hz-Q8_0.gguf",
+    ];
+    let path_str = path.to_string_lossy();
+    defaults.iter().any(|d| path_str == *d)
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -175,6 +185,15 @@ fn main() -> Result<()> {
                 .or(cfg.codec)
                 .unwrap_or_else(|| PathBuf::from("models/qwen-tokenizer-12hz-Q8_0.gguf"));
 
+            // Auto-download default models if missing
+            if is_default_model_path(&talker_path) || is_default_model_path(&codec_path) {
+                let models_dir = talker_path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("models"));
+                downloader::ensure_default_models(models_dir, &cfg.hf_repo)?;
+            }
+
             let req = QwenTtsRequest {
                 text,
                 out,
@@ -212,6 +231,14 @@ fn main() -> Result<()> {
         }
 
         Commands::Inspect { talker, codec } => {
+            // Auto-download default models if missing before inspection
+            if is_default_model_path(&talker) || is_default_model_path(&codec) {
+                let models_dir = talker
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("models"));
+                downloader::ensure_default_models(models_dir, &cfg.hf_repo)?;
+            }
             let info = gguf_probe::inspect_pair(&talker, &codec)?;
             println!("{}", info);
         }
@@ -392,6 +419,33 @@ Write-Host "`n✅ Setup complete! Run 'cargo run -- synth --help' for more optio
         },
         build_script = build_script,
     );
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_is_default_model_path_matches() {
+        assert!(is_default_model_path(Path::new(
+            "models/qwen-talker-1.7b-base-Q8_0.gguf"
+        )));
+        assert!(is_default_model_path(Path::new(
+            "models/qwen-tokenizer-12hz-Q8_0.gguf"
+        )));
+    }
+
+    #[test]
+    fn test_is_default_model_path_no_match() {
+        assert!(!is_default_model_path(Path::new("models/custom-file.gguf")));
+        assert!(!is_default_model_path(Path::new(
+            "/absolute/path/model.gguf"
+        )));
+        assert!(!is_default_model_path(Path::new(
+            "other-dir/qwen-talker.gguf"
+        )));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
