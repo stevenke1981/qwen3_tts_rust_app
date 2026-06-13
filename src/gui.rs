@@ -17,7 +17,10 @@ use std::{
 };
 
 use crate::config::AppConfig;
-use crate::qwentts_cli::{QwenTtsRequest, QwenTtsRunner};
+use crate::qwentts_cli::{QwenTtsRequest, QwenTtsRunner, SynthesisOutput, Synthesizer};
+
+#[cfg(feature = "ffi")]
+use crate::qwen_ffi::QwenFfiRunner;
 
 /// Thread-safe log collector
 #[derive(Clone)]
@@ -324,9 +327,12 @@ impl QwenTtsApp {
             },
         };
 
-        let runner = QwenTtsRunner {
-            qwen_tts_bin: PathBuf::from(&self.qwen_tts_bin),
-        };
+        let runner: Box<dyn Synthesizer> = runner_from(
+            Some(std::path::Path::new(&self.qwen_tts_bin)),
+            std::path::Path::new(&self.talker_path),
+            std::path::Path::new(&self.codec_path),
+            PathBuf::from(&self.qwen_tts_bin),
+        );
 
         let log = self.log.clone();
         let ctx_clone = ctx.clone();
@@ -338,8 +344,15 @@ impl QwenTtsApp {
         thread::spawn(move || {
             let result = runner.synthesize(&req);
             match result {
-                Ok(()) => {
-                    log.push(format!("Generated: {}", out_path.display()));
+                Ok(SynthesisOutput::FileWritten(path)) => {
+                    log.push(format!("Generated: {}", path.display()));
+                }
+                Ok(SynthesisOutput::AudioData(samples)) => {
+                    log.push(format!(
+                        "Generated {} samples ({:.1}s)",
+                        samples.len(),
+                        samples.len() as f64 / 24000.0
+                    ));
                 }
                 Err(e) => {
                     log.push(format!("Error: {e}"));
@@ -416,4 +429,39 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
         Box::new(|_cc| Ok(Box::new(app))),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Synthesizer runner factory
+// ═══════════════════════════════════════════════════════════════
+
+#[cfg(feature = "ffi")]
+fn runner_from(
+    lib_path: Option<&std::path::Path>,
+    talker_path: &std::path::Path,
+    codec_path: &std::path::Path,
+    fallback_bin: PathBuf,
+) -> Box<dyn Synthesizer> {
+    match QwenFfiRunner::try_new(
+        lib_path,
+        talker_path.to_path_buf(),
+        codec_path.to_path_buf(),
+    ) {
+        Ok(ffi) => Box::new(ffi) as Box<dyn Synthesizer>,
+        Err(_) => Box::new(QwenTtsRunner {
+            qwen_tts_bin: fallback_bin,
+        }) as Box<dyn Synthesizer>,
+    }
+}
+
+#[cfg(not(feature = "ffi"))]
+fn runner_from(
+    _lib_path: Option<&std::path::Path>,
+    _talker_path: &std::path::Path,
+    _codec_path: &std::path::Path,
+    fallback_bin: PathBuf,
+) -> Box<dyn Synthesizer> {
+    Box::new(QwenTtsRunner {
+        qwen_tts_bin: fallback_bin,
+    }) as Box<dyn Synthesizer>
 }

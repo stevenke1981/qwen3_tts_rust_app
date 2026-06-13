@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod config;
 mod downloader;
@@ -14,8 +14,11 @@ mod qwentts_cli;
 #[cfg(feature = "gui")]
 mod gui;
 
+#[cfg(feature = "ffi")]
+mod qwen_ffi;
+
 use config::AppConfig;
-use qwentts_cli::{QwenTtsRequest, QwenTtsRunner};
+use qwentts_cli::{QwenTtsRequest, QwenTtsRunner, SynthesisOutput, Synthesizer};
 
 #[derive(Parser, Debug)]
 #[command(name = "qwen-tts-app")]
@@ -165,20 +168,18 @@ fn main() -> Result<()> {
             ref_text,
             device,
         } => {
-            let runner = QwenTtsRunner {
-                qwen_tts_bin: qwen_tts_bin
-                    .or(cfg.qwen_tts_bin)
-                    .unwrap_or_else(|| PathBuf::from("qwentts.cpp/build/qwen-tts")),
-            };
+            let talker_path = talker
+                .or(cfg.talker)
+                .unwrap_or_else(|| PathBuf::from("models/qwen-talker-1.7b-base-Q8_0.gguf"));
+            let codec_path = codec
+                .or(cfg.codec)
+                .unwrap_or_else(|| PathBuf::from("models/qwen-tokenizer-12hz-Q8_0.gguf"));
+
             let req = QwenTtsRequest {
                 text,
                 out,
-                talker: talker
-                    .or(cfg.talker)
-                    .unwrap_or_else(|| PathBuf::from("models/qwen-talker-1.7b-base-Q8_0.gguf")),
-                codec: codec
-                    .or(cfg.codec)
-                    .unwrap_or_else(|| PathBuf::from("models/qwen-tokenizer-12hz-Q8_0.gguf")),
+                talker: talker_path.clone(),
+                codec: codec_path.clone(),
                 lang,
                 speaker,
                 instruct,
@@ -186,8 +187,28 @@ fn main() -> Result<()> {
                 ref_text,
                 ggml_backend: device.ggml_backend_env().map(str::to_string),
             };
-            runner.synthesize(&req)?;
-            println!("✅ WAV generated: {}", req.out.display());
+
+            let custom_lib = qwen_tts_bin.as_deref();
+            let fallback_bin = qwen_tts_bin
+                .clone()
+                .or(cfg.qwen_tts_bin.clone())
+                .unwrap_or_else(|| PathBuf::from("qwentts.cpp/build/qwen-tts"));
+            let runner: Box<dyn Synthesizer> =
+                create_synth_runner(custom_lib, &talker_path, &codec_path, fallback_bin);
+
+            let output = runner.synthesize(&req)?;
+            match output {
+                SynthesisOutput::FileWritten(path) => {
+                    println!("WAV generated: {}", path.display());
+                }
+                SynthesisOutput::AudioData(samples) => {
+                    println!(
+                        "Audio generated: {} samples ({:.1}s)",
+                        samples.len(),
+                        samples.len() as f64 / 24000.0
+                    );
+                }
+            }
         }
 
         Commands::Inspect { talker, codec } => {
@@ -371,4 +392,47 @@ Write-Host "`n✅ Setup complete! Run 'cargo run -- synth --help' for more optio
         },
         build_script = build_script,
     );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Synthesizer runner factory (FFI with process fallback)
+// ═══════════════════════════════════════════════════════════════
+
+/// Create a synthesizer: try FFI shared library first, fall back to
+/// process-based runner.
+#[cfg(feature = "ffi")]
+fn create_synth_runner(
+    lib_path: Option<&Path>,
+    talker_path: &Path,
+    codec_path: &Path,
+    fallback_bin: PathBuf,
+) -> Box<dyn Synthesizer> {
+    match qwen_ffi::QwenFfiRunner::try_new(
+        lib_path,
+        talker_path.to_path_buf(),
+        codec_path.to_path_buf(),
+    ) {
+        Ok(ffi) => {
+            tracing::info!("Using qwen shared library (FFI)");
+            Box::new(ffi) as Box<dyn Synthesizer>
+        }
+        Err(_) => {
+            tracing::info!("qwen library not found, using process-based runner");
+            Box::new(QwenTtsRunner {
+                qwen_tts_bin: fallback_bin,
+            }) as Box<dyn Synthesizer>
+        }
+    }
+}
+
+#[cfg(not(feature = "ffi"))]
+fn create_synth_runner(
+    _lib_path: Option<&Path>,
+    _talker_path: &Path,
+    _codec_path: &Path,
+    fallback_bin: PathBuf,
+) -> Box<dyn Synthesizer> {
+    Box::new(QwenTtsRunner {
+        qwen_tts_bin: fallback_bin,
+    }) as Box<dyn Synthesizer>
 }

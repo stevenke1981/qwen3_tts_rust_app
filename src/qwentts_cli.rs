@@ -25,8 +25,27 @@ pub struct QwenTtsRequest {
     pub ggml_backend: Option<String>,
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Synthesizer trait — shared by process and FFI runners
+// ═══════════════════════════════════════════════════════════════
+
+/// Output from a TTS synthesis.
+#[derive(Debug)]
+pub enum SynthesisOutput {
+    /// A WAV file was written to the given path.
+    FileWritten(PathBuf),
+    /// Raw PCM audio samples (f32 mono, 24 kHz).
+    AudioData(Vec<f32>),
+}
+
+/// Interface for TTS synthesis backends.
+pub trait Synthesizer {
+    /// Run TTS synthesis and return the output.
+    fn synthesize(&self, req: &QwenTtsRequest) -> Result<SynthesisOutput>;
+}
+
 impl QwenTtsRunner {
-    pub fn synthesize(&self, req: &QwenTtsRequest) -> Result<()> {
+    pub fn synthesize(&self, req: &QwenTtsRequest) -> Result<SynthesisOutput> {
         // --- Validation (cheapest checks first) ---
         if req.text.trim().is_empty() {
             bail!("text input is empty");
@@ -129,7 +148,13 @@ impl QwenTtsRunner {
             );
         }
 
-        Ok(())
+        Ok(SynthesisOutput::FileWritten(req.out.clone()))
+    }
+}
+
+impl Synthesizer for QwenTtsRunner {
+    fn synthesize(&self, req: &QwenTtsRequest) -> Result<SynthesisOutput> {
+        self.synthesize(req)
     }
 }
 
