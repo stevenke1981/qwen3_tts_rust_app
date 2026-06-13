@@ -1,0 +1,12 @@
+/target
+*.wav
+*.mp3
+qwen-tts.toml
+models/
+qwentts.cpp/
+# Keep example config but ignore active config
+qwen-tts.toml
+# Tooling artifacts
+.opencode/tantivy/
+.opencode/memory.db*
+.opencode/vectors.usearch

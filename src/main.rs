@@ -1,0 +1,354 @@
+use anyhow::Result;
+use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+mod config;
+mod downloader;
+mod gguf_probe;
+mod qwentts_cli;
+
+#[cfg(feature = "gui")]
+mod gui;
+
+use config::AppConfig;
+use qwentts_cli::{QwenTtsRequest, QwenTtsRunner};
+
+#[derive(Parser, Debug)]
+#[command(name = "qwen-tts-app")]
+#[command(about = "Rust TTS app for Qwen3-TTS GGUF — synth, inspect, download models")]
+struct Cli {
+    /// Optional TOML config file. CLI flags override config values.
+    #[arg(long, default_value = "qwen-tts.toml")]
+    config: PathBuf,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Generate speech (text → WAV).
+    Synth {
+        #[arg(long)]
+        text: String,
+        #[arg(long, default_value = "out.wav")]
+        out: PathBuf,
+        #[arg(long)]
+        talker: Option<PathBuf>,
+        #[arg(long)]
+        codec: Option<PathBuf>,
+        #[arg(long)]
+        qwen_tts_bin: Option<PathBuf>,
+        #[arg(long, default_value = "English")]
+        lang: String,
+        #[arg(long)]
+        speaker: Option<String>,
+        #[arg(long)]
+        instruct: Option<String>,
+        #[arg(long)]
+        ref_wav: Option<PathBuf>,
+        #[arg(long)]
+        ref_text: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "auto")]
+        device: Device,
+    },
+
+    /// Inspect talker / codec GGUF metadata using llama-gguf.
+    Inspect {
+        #[arg(long)]
+        talker: PathBuf,
+        #[arg(long)]
+        codec: PathBuf,
+    },
+
+    /// Download Qwen3-TTS GGUF model files from Hugging Face Hub.
+    Download {
+        /// Hugging Face repo ID (default: Serveurperso/Qwen3-TTS-GGUF)
+        #[arg(long, default_value = downloader::DEFAULT_REPO)]
+        repo: String,
+        /// Specific files to download (default: talker + codec Q8_0)
+        #[arg(long)]
+        file: Vec<String>,
+        /// Output directory (default: models/)
+        #[arg(long, default_value = "models")]
+        out_dir: PathBuf,
+        /// Git revision / branch (default: main)
+        #[arg(long, default_value = "main")]
+        revision: String,
+        /// List available files for the given repo (dry-run, no download)
+        #[arg(long)]
+        list: bool,
+    },
+
+    /// Print setup script for building qwentts.cpp and downloading models.
+    SetupScript {
+        #[arg(long, value_enum, default_value = "cuda")]
+        target: BuildTarget,
+        /// Generate Windows PowerShell script instead of bash
+        #[arg(long)]
+        powershell: bool,
+    },
+
+    /// Launch the desktop GUI (requires `gui` feature).
+    #[cfg(feature = "gui")]
+    Gui,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum Device {
+    Auto,
+    Cpu,
+    Cuda0,
+    Vulkan0,
+    Metal,
+}
+
+impl Device {
+    fn ggml_backend_env(&self) -> Option<&'static str> {
+        match self {
+            Device::Auto => None,
+            Device::Cpu => Some("CPU"),
+            Device::Cuda0 => Some("CUDA0"),
+            Device::Vulkan0 => Some("Vulkan0"),
+            Device::Metal => Some("Metal"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum BuildTarget {
+    Cpu,
+    Cuda,
+    Vulkan,
+    All,
+}
+
+fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let cli = Cli::parse();
+    let cfg = AppConfig::load_or_default(&cli.config)?;
+
+    match cli.command {
+        Commands::Synth {
+            text,
+            out,
+            talker,
+            codec,
+            qwen_tts_bin,
+            lang,
+            speaker,
+            instruct,
+            ref_wav,
+            ref_text,
+            device,
+        } => {
+            let runner = QwenTtsRunner {
+                qwen_tts_bin: qwen_tts_bin
+                    .or(cfg.qwen_tts_bin)
+                    .unwrap_or_else(|| PathBuf::from("qwentts.cpp/build/qwen-tts")),
+            };
+            let req = QwenTtsRequest {
+                text,
+                out,
+                talker: talker
+                    .or(cfg.talker)
+                    .unwrap_or_else(|| PathBuf::from("models/qwen-talker-1.7b-base-Q8_0.gguf")),
+                codec: codec
+                    .or(cfg.codec)
+                    .unwrap_or_else(|| PathBuf::from("models/qwen-tokenizer-12hz-Q8_0.gguf")),
+                lang,
+                speaker,
+                instruct,
+                ref_wav,
+                ref_text,
+                ggml_backend: device.ggml_backend_env().map(str::to_string),
+            };
+            runner.synthesize(&req)?;
+            println!("✅ WAV generated: {}", req.out.display());
+        }
+
+        Commands::Inspect { talker, codec } => {
+            let info = gguf_probe::inspect_pair(&talker, &codec)?;
+            println!("{}", info);
+        }
+
+        Commands::Download {
+            repo,
+            file,
+            out_dir,
+            revision,
+            list,
+        } => {
+            if list {
+                println!("Available files for {repo}:");
+                for f in downloader::DEFAULT_FILES {
+                    println!("  {f}");
+                }
+                println!("\nUse `--file <name>` to download specific files.");
+                return Ok(());
+            }
+
+            let files: Vec<&str> = if file.is_empty() {
+                downloader::DEFAULT_FILES.to_vec()
+            } else {
+                file.iter().map(|s| s.as_str()).collect()
+            };
+
+            println!("Downloading from {repo} (revision: {revision})...");
+            let mut downloaded = Vec::new();
+            for fname in &files {
+                match downloader::download_hf_file(&repo, fname, &out_dir, &revision) {
+                    Ok(path) => downloaded.push(path),
+                    Err(e) => {
+                        eprintln!("⚠ Failed to download {fname}: {e}");
+                    }
+                }
+            }
+
+            if downloaded.is_empty() {
+                anyhow::bail!("No files were downloaded successfully.");
+            }
+            downloader::print_summary(&downloaded);
+        }
+
+        Commands::SetupScript { target, powershell } => {
+            if powershell {
+                print_setup_script_powershell(target);
+            } else {
+                print_setup_script_bash(target);
+            }
+        }
+
+        #[cfg(feature = "gui")]
+        Commands::Gui => {
+            gui::run_gui(cfg)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate a bash setup script (Linux / macOS / WSL).
+fn print_setup_script_bash(target: BuildTarget) {
+    let build = match target {
+        BuildTarget::Cpu => "./buildcpu.sh",
+        BuildTarget::Cuda => "./buildcuda.sh",
+        BuildTarget::Vulkan => "./buildvulkan.sh",
+        BuildTarget::All => "./buildall.sh",
+    };
+
+    println!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================
+# Qwen3-TTS Rust App — Setup Script (bash)
+# ============================================================
+
+echo "=== Step 1: Clone qwentts.cpp ==="
+if [ ! -d "qwentts.cpp" ]; then
+    git clone --recurse-submodules https://github.com/ServeurpersoCom/qwentts.cpp.git
+fi
+cd qwentts.cpp
+git pull --recurse-submodules
+
+echo "=== Step 2: Build qwentts.cpp ({build_name}) ==="
+{build}
+cd ..
+
+echo "=== Step 3: Download GGUF models ==="
+cargo run -- download --out-dir models
+
+echo ""
+echo "=== Step 4: Verify ==="
+ls -lh models/*.gguf
+
+echo ""
+echo "=== Step 5: Quick test ==="
+cargo run --release -- synth \
+  --text "Hello from Qwen3 TTS." \
+  --out test_output.wav \
+  --device auto
+
+echo ""
+echo "✅ Setup complete! Run 'cargo run -- synth --help' for more options."
+"#,
+        build_name = format!("{:?}", target).to_lowercase()
+    );
+}
+
+/// Generate a PowerShell setup script (Windows).
+fn print_setup_script_powershell(target: BuildTarget) {
+    let build_script = match target {
+        BuildTarget::Cpu => "./buildcpu.bat",
+        BuildTarget::Cuda => "./buildcuda.bat",
+        BuildTarget::Vulkan => "./buildvulkan.bat",
+        BuildTarget::All => "./buildall.bat",
+    };
+
+    println!(
+        r#"<#
+.SYNOPSIS
+    Qwen3-TTS Rust App — Setup Script (PowerShell)
+.DESCRIPTION
+    Builds qwentts.cpp, downloads GGUF models, and verifies the setup.
+#>
+
+$ErrorActionPreference = "Stop"
+
+Write-Host "=== Step 1: Clone qwentts.cpp ===" -ForegroundColor Cyan
+if (-not (Test-Path "qwentts.cpp")) {{
+    git clone --recurse-submodules https://github.com/ServeurpersoCom/qwentts.cpp.git
+}}
+Push-Location qwentts.cpp
+git pull --recurse-submodules
+
+Write-Host "=== Step 2: Build qwentts.cpp ({build_name}) ===" -ForegroundColor Cyan
+# On Windows, qwentts.cpp likely uses CMake directly:
+# mkdir build -Force | Out-Null
+# cd build
+# cmake .. -DGGML_{backend_flag}=ON
+# cmake --build . --config Release
+# Or use the provided build script:
+cd ..
+if (Test-Path "qwentts.cpp/{build_script}") {{
+    & "qwentts.cpp\{build_script}"
+}} else {{
+    Write-Host "No Windows build script found; using CMake directly..." -ForegroundColor Yellow
+    $bb = if ("{backend}" -eq "cuda") {{ "OFF" }} else {{ "ON" }}
+    Push-Location qwentts.cpp
+    New-Item -ItemType Directory -Path build -Force | Out-Null
+    Set-Location build
+    cmake .. -DGGML_CUDA={backend_flag}
+    cmake --build . --config Release
+    Pop-Location
+}}
+Pop-Location
+
+Write-Host "=== Step 3: Download GGUF models ===" -ForegroundColor Cyan
+cargo run -- download --out-dir models
+
+Write-Host "`n=== Step 4: Verify ===" -ForegroundColor Cyan
+Get-ChildItem models/*.gguf | ForEach-Object {{ Write-Host ("  " + $_.Name + " (" + [math]::Round($_.Length/1MB, 1) + " MB)") }}
+
+Write-Host "`n=== Step 5: Quick test ===" -ForegroundColor Cyan
+cargo run --release -- synth `
+  --text "Hello from Qwen3 TTS on Windows." `
+  --out test_output.wav `
+  --device auto
+
+Write-Host "`n✅ Setup complete! Run 'cargo run -- synth --help' for more options." -ForegroundColor Green
+"#,
+        build_name = format!("{:?}", target).to_lowercase(),
+        backend = format!("{:?}", target).to_lowercase(),
+        backend_flag = if matches!(target, BuildTarget::Cuda) {
+            "ON"
+        } else {
+            "OFF"
+        },
+        build_script = build_script,
+    );
+}

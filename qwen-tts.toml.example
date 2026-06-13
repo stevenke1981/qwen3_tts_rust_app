@@ -1,0 +1,23 @@
+# Qwen3-TTS Rust App Configuration
+# Copy this file to qwen-tts.toml and adjust paths.
+
+# Path to the qwen-tts binary (from qwentts.cpp build)
+qwen_tts_bin = "qwentts.cpp/build/qwen-tts"
+
+# Path to the talker GGUF model
+talker = "models/qwen-talker-1.7b-base-Q8_0.gguf"
+
+# Path to the codec/tokenizer GGUF model
+codec = "models/qwen-tokenizer-12hz-Q8_0.gguf"
+
+# Default language for synthesis (English, Chinese, Japanese, Korean, French, German)
+language = "English"
+
+# Default compute backend (auto, CPU, CUDA0, Vulkan0, Metal)
+device = "auto"
+
+# Output directory for generated WAV files
+output_dir = "."
+
+# Hugging Face repo ID for model downloads
+hf_repo = "Serveurperso/Qwen3-TTS-GGUF"
