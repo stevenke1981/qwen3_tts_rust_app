@@ -15,3 +15,8 @@
 **Trigger:** Chocolatey package installs failed due to missing admin rights.
 **Rule:** On Windows without admin, download pre-built binary archives from GitHub Releases directly using `Invoke-WebRequest` and extract with `Expand-Archive`. This avoids the admin requirement entirely.
 **Source:** Build release and qwen.dll
+---
+## Lesson #4 — 2026-06-14
+**Trigger:** Test hung when `prompt_yes_no()` tried to read stdin in non-interactive test environment.
+**Rule:** Use `std::io::Stdin::is_terminal()` (stabilized in Rust 1.70) to detect interactive TTY before prompting user. In tests/non-interactive mode, default to `false` (decline) instead of blocking on stdin read.
+**Source:** Auto-download models feature
