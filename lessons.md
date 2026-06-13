@@ -1,0 +1,17 @@
+# Lessons Learned
+
+---
+## Lesson #1 — 2026-06-14
+**Trigger:** Rust build failed because `protoc` was missing when compiling `llama-gguf` crate.
+**Rule:** Before running `cargo build`, check if `llama-gguf` (or similar protobuf-dependent crates) are in the dependency tree. If so, ensure `protoc` is installed first. On Windows without admin rights, download the binary directly from GitHub and set `$env:PROTOC` to its path.
+**Source:** Build release and qwen.dll
+---
+## Lesson #2 — 2026-06-14
+**Trigger:** Building `qwentts.cpp` required a C++ compiler; initial check showed no MSVC.
+**Rule:** Use `Get-ChildItem -Recurse -Filter "cl.exe"` under VS install directories to find MSVC compiler (it may be installed but not in PATH). Then use `vcvars64.bat` via `cmd /c "... && set"` to capture environment variables into PowerShell.
+**Source:** Build release and qwen.dll
+---
+## Lesson #3 — 2026-06-14
+**Trigger:** Chocolatey package installs failed due to missing admin rights.
+**Rule:** On Windows without admin, download pre-built binary archives from GitHub Releases directly using `Invoke-WebRequest` and extract with `Expand-Archive`. This avoids the admin requirement entirely.
+**Source:** Build release and qwen.dll
