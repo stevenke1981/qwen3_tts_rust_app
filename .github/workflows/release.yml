@@ -1,0 +1,105 @@
+# Build and package release for Windows
+# Produces a password-protected zip containing:
+#   - qwen-tts-app.exe (Rust CLI + GUI binary)
+#   - qwen.dll + ggml*.dll (from qwentts.cpp)
+#   - config example, README, setup scripts
+#
+# Trigger: push to master/main, tag push (v*), or manual dispatch.
+
+name: Build and Package
+
+on:
+  push:
+    branches: [ "master", "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      # ── 1. Checkout main repo ──────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Setup toolchains ────────────────────────────────────
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 3. Build Rust release (CLI + GUI + FFI) ────────────────
+      - name: Build Rust release
+        run: cargo build --release --features "gui,ffi"
+
+      # ── 4. Build qwen.dll from qwentts.cpp ─────────────────────
+      - name: Checkout qwentts.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ServeurpersoCom/qwentts.cpp
+          path: qwentts.cpp
+          submodules: recursive
+
+      - name: Build qwen.dll
+        working-directory: qwentts.cpp
+        run: |
+          cmake -B build -DQWEN_SHARED=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      # ── 5. Install 7-Zip for password-protected archive ────────
+      - name: Install 7-Zip
+        run: choco install 7zip --no-progress -y
+
+      # ── 6. List build outputs (diagnostic) ────────────────────
+      - name: List build outputs
+        shell: pwsh
+        run: |
+          Write-Output "=== Rust binary ==="
+          Get-Item target\release\qwen-tts-app.exe
+          Write-Output "=== qwen.dll ==="
+          Get-ChildItem -Recurse qwentts.cpp\build\*.dll | Select-Object FullName, Length
+
+      # ── 7. Stage all files ─────────────────────────────────────
+      - name: Stage files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path staging\scripts, staging\models -Force | Out-Null
+
+          Copy-Item target\release\qwen-tts-app.exe staging\
+
+          # qwen.dll is in build/Release/
+          Copy-Item qwentts.cpp\build\Release\qwen.dll staging\
+
+          # ggml*.dll are in build/src/Release/
+          Copy-Item qwentts.cpp\build\src\Release\ggml.dll staging\
+          Copy-Item qwentts.cpp\build\src\Release\ggml-base.dll staging\
+          Copy-Item qwentts.cpp\build\src\Release\ggml-cpu.dll staging\
+
+          Copy-Item qwen-tts.toml.example staging\
+          Copy-Item README.md staging\
+          Copy-Item scripts\* staging\scripts\ -ErrorAction SilentlyContinue
+
+      # ── 8. Create password-protected zip ───────────────────────
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $pass = "091968559"
+          & "C:\Program Files\7-Zip\7z.exe" a -tzip "-p$pass" -mx=9 qwen3-tts-app-windows.zip .\staging\*
+
+      # ── 9. Upload as workflow artifact ─────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-tts-app-windows
+          path: qwen3-tts-app-windows.zip
