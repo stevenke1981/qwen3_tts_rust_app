@@ -11,7 +11,7 @@ use anyhow::Result;
 use eframe::egui;
 use rodio::{Decoder, OutputStream, Sink};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
 };
@@ -21,6 +21,89 @@ use crate::qwentts_cli::{QwenTtsRequest, QwenTtsRunner, SynthesisOutput, Synthes
 
 #[cfg(feature = "ffi")]
 use crate::qwen_ffi::QwenFfiRunner;
+
+// ═══════════════════════════════════════════════════════════════
+// CJK font support
+// ═══════════════════════════════════════════════════════════════
+
+/// Try to locate and load a system CJK font, then register it with egui.
+/// Without this, Chinese/Japanese/Korean characters show as tofu (□).
+fn setup_cjk_fonts(ctx: &egui::Context) {
+    let data = lookup_system_cjk_font();
+    if let Some(data) = data {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts
+            .font_data
+            .insert("cjk".to_owned(), Arc::new(egui::FontData::from_owned(data)));
+
+        // Prepend CJK font to every font family so CJK glyphs are found first
+        for family in &[
+            egui::FontFamily::Proportional,
+            egui::FontFamily::Monospace,
+        ] {
+            if let Some(list) = fonts.families.get_mut(family) {
+                list.insert(0, "cjk".to_owned());
+            }
+        }
+        ctx.set_fonts(fonts);
+    } else {
+        // Not critical — fall back to default (latin chars only)
+        eprintln!("[gui] no system CJK font found; Chinese text may not render");
+    }
+}
+
+/// Platform-specific system CJK font lookup.
+fn lookup_system_cjk_font() -> Option<Vec<u8>> {
+    // Windows: Microsoft YaHei (微軟雅黑), always present on Chinese Windows
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = [
+            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\msyhbd.ttc",
+            r"C:\Windows\Fonts\simsun.ttc",
+            r"C:\Windows\Fonts\SimHei.ttf",
+            r"C:\Windows\Fonts\Deng.ttf",
+        ];
+        for path in &candidates {
+            if Path::new(path).exists() {
+                return std::fs::read(path).ok();
+            }
+        }
+    }
+
+    // macOS: PingFang or STHeiti
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        ];
+        for path in &candidates {
+            if Path::new(path).exists() {
+                return std::fs::read(path).ok();
+            }
+        }
+    }
+
+    // Linux: common package paths for Noto Sans CJK / Droid Sans Fallback
+    #[cfg(target_os = "linux")]
+    {
+        let candidates = [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        ];
+        for path in &candidates {
+            if Path::new(path).exists() {
+                return std::fs::read(path).ok();
+            }
+        }
+    }
+
+    None
+}
 
 /// Thread-safe log collector
 #[derive(Clone)]
@@ -426,7 +509,10 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
     eframe::run_native(
         "Qwen3-TTS Studio",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app))),
+        Box::new(|cc| {
+            setup_cjk_fonts(&cc.egui_ctx);
+            Ok(Box::new(app))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
 }
