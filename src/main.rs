@@ -1,3 +1,7 @@
+// On Windows GUI builds, suppress the console window so double-click
+// doesn't flash a cmd window. CLI output still works in a terminal.
+#![cfg_attr(feature = "gui", windows_subsystem = "windows")]
+
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
@@ -22,7 +26,7 @@ struct Cli {
     config: PathBuf,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -131,7 +135,23 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = AppConfig::load_or_default(&cli.config)?;
 
-    match cli.command {
+    match cli.command.unwrap_or_else(|| {
+        // No subcommand given → default to Gui (if compiled with gui feature)
+        #[cfg(feature = "gui")]
+        return Commands::Gui;
+        #[cfg(not(feature = "gui"))]
+        {
+            eprintln!(
+                "{}: no command given.\n\
+                 Usage: qwen-tts-app <COMMAND>\n\
+                 Try:   qwen-tts-app --help\n\
+                 \n\
+                 Tip: recompile with --features gui for the desktop interface.",
+                env!("CARGO_PKG_NAME")
+            );
+            std::process::exit(1);
+        }
+    }) {
         Commands::Synth {
             text,
             out,
