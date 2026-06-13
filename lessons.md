@@ -20,3 +20,8 @@
 **Trigger:** Test hung when `prompt_yes_no()` tried to read stdin in non-interactive test environment.
 **Rule:** Use `std::io::Stdin::is_terminal()` (stabilized in Rust 1.70) to detect interactive TTY before prompting user. In tests/non-interactive mode, default to `false` (decline) instead of blocking on stdin read.
 **Source:** Auto-download models feature
+---
+## Lesson #5 — 2026-06-14
+**Trigger:** GitHub Actions workflow needed to build qwen.dll — DLLs end up in different subdirectories depending on CMake target.
+**Rule:** After `cmake --build build --config Release`, check both `build/Release/` (for the main target like `qwen.dll`) and `build/src/Release/` (for dependency DLLs like ggml*.dll). Always add a diagnostic `Get-ChildItem -Recurse *.dll` step to verify locations before staging.
+**Source:** GitHub Actions workflow for release build
