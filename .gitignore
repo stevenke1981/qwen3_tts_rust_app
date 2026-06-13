@@ -17,6 +17,9 @@ qwen-tts.toml
 # Workspace tooling artifacts
 ${PROJECT_ROOT}/
 
+# Distribution packages
+dist/
+
 # qwen shared library and ggml runtime DLLs
 *.dll
 !src/**/*.rs
