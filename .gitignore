@@ -10,3 +10,13 @@ qwen-tts.toml
 .opencode/tantivy/
 .opencode/memory.db*
 .opencode/vectors.usearch
+
+# Local tooling (protoc, etc.)
+.local/
+
+# Workspace tooling artifacts
+${PROJECT_ROOT}/
+
+# qwen shared library and ggml runtime DLLs
+*.dll
+!src/**/*.rs
