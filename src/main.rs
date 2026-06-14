@@ -6,6 +6,72 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 
+// ── GUI-only: show errors in a message box (no console) ─────────
+#[cfg(feature = "gui")]
+mod error_dialog {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    /// Show a fatal error message box, then wait for user to press OK
+    /// before terminating.
+    pub fn show_and_wait(title: &str, msg: &str) {
+        let title_wide: Vec<u16> = OsStr::new(title)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let msg_wide: Vec<u16> = OsStr::new(msg)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        extern "system" {
+            fn MessageBoxW(
+                hWnd: *mut std::ffi::c_void,
+                lpText: *const u16,
+                lpCaption: *const u16,
+                uType: u32,
+            ) -> i32;
+        }
+
+        unsafe {
+            // MB_OK | MB_ICONERROR = 0x00000000 | 0x00000010
+            MessageBoxW(
+                std::ptr::null_mut(),
+                msg_wide.as_ptr(),
+                title_wide.as_ptr(),
+                0x00000010,
+            );
+        }
+    }
+
+    /// Install a panic hook that displays a message box, so panics
+    /// are visible even without a console window.
+    pub fn install_panic_hook() {
+        std::panic::set_hook(Box::new(|info| {
+            let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown panic — see log for details.".to_string()
+            };
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "?".to_string());
+            let full = format!(
+                "A fatal error occurred and the application must close.\n\n\
+                 {}\n\n\
+                 Location: {}",
+                payload, location,
+            );
+            show_and_wait("Qwen3-TTS Studio — Fatal Error", &full);
+            // After the dialog, tracing can still print to stderr if any.
+            eprintln!("[FATAL] {}", full);
+        }));
+    }
+}
+
 mod config;
 mod downloader;
 mod gguf_probe;
@@ -156,7 +222,37 @@ fn is_default_model_path(path: &Path) -> bool {
     defaults.iter().any(|d| path_str == *d)
 }
 
-fn main() -> Result<()> {
+fn main() {
+    // ── GUI-only: install panic hook & catch errors ─────────────
+    #[cfg(feature = "gui")]
+    {
+        error_dialog::install_panic_hook();
+        match run_inner() {
+            Ok(()) => {}
+            Err(e) => {
+                error_dialog::show_and_wait(
+                    "Qwen3-TTS Studio — Error",
+                    &format!(
+                        "The application encountered an error and must close.\n\n{}",
+                        e
+                    ),
+                );
+                eprintln!("[FATAL] {:?}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+    #[cfg(not(feature = "gui"))]
+    {
+        if let Err(e) = run_inner() {
+            eprintln!("{}: error: {:?}", env!("CARGO_PKG_NAME"), e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Inner logic separated so GUI builds can catch errors and show a dialog.
+fn run_inner() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
