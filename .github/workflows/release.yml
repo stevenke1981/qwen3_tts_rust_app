@@ -63,7 +63,7 @@ jobs:
 
       # ── 4. Install GPU toolkits (CUDA + Vulkan) ──────────────
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: '12.6'
 
