@@ -25,3 +25,13 @@
 **Trigger:** GitHub Actions workflow needed to build qwen.dll — DLLs end up in different subdirectories depending on CMake target.
 **Rule:** After `cmake --build build --config Release`, check both `build/Release/` (for the main target like `qwen.dll`) and `build/src/Release/` (for dependency DLLs like ggml*.dll). Always add a diagnostic `Get-ChildItem -Recurse *.dll` step to verify locations before staging.
 **Source:** GitHub Actions workflow for release build
+---
+## Lesson #6 — 2026-06-14
+**Trigger:** After refactoring PowerShell template to use `$ggml_flags = switch ("{backend}")`, the old `backend_flag` format arg was removed from the `println!` call but a stale comment still referenced `{backend_flag}`, causing a compile error for unused variable.
+**Rule:** After changing template variable names in format strings, run a full `cargo check --features "ffi"` (not just `cargo check` without features) to catch stale variable references anywhere in the same file.
+**Source:** GPU acceleration Task 6 — fix setup scripts
+---
+## Lesson #7 — 2026-06-14
+**Trigger:** Added `n_gpu_layers` field to `QwenTtsRequest` but forgot to update the `QwenTtsApp::start_generation()` constructor in `gui.rs`, causing a compile error.
+**Rule:** When adding a required field to a struct used across multiple files (main.rs, gui.rs, test modules), search all constructors with `grep` before making the change, then fix them all in one pass before the first compile check.
+**Source:** n_gpu_layers CLI flag implementation
