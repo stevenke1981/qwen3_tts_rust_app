@@ -499,22 +499,29 @@ impl QwenTtsApp {
 
         self.is_generating = true;
         log.push("Starting generation...".into());
+        let start = std::time::Instant::now();
 
         thread::spawn(move || {
+            let elapsed = start.elapsed();
             let result = runner.synthesize(&req);
+            let total_secs = elapsed.as_secs_f64();
             match result {
                 Ok(SynthesisOutput::FileWritten(path)) => {
-                    log.push(format!("Generated: {}", path.display()));
+                    log.push(format!("Generated: {} ({:.2}s)", path.display(), total_secs));
                 }
                 Ok(SynthesisOutput::AudioData(samples)) => {
+                    let audio_secs = samples.len() as f64 / 24000.0;
+                    let rtf = total_secs / audio_secs.max(0.001);
                     log.push(format!(
-                        "Generated {} samples ({:.1}s)",
+                        "Generated {} samples ({:.1}s audio) in {:.2}s (RTF: {:.2}x)",
                         samples.len(),
-                        samples.len() as f64 / 24000.0
+                        audio_secs,
+                        total_secs,
+                        rtf
                     ));
                 }
                 Err(e) => {
-                    log.push(format!("Error: {e}"));
+                    log.push(format!("Error: {e} (after {:.2}s)", total_secs));
                 }
             }
             ctx_clone.request_repaint();
@@ -577,7 +584,7 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
-            .with_title("Qwen3-TTS Studio"),
+            .with_title(concat!("Qwen3-TTS Studio v", env!("CARGO_PKG_VERSION"))),
         ..Default::default()
     };
 
@@ -606,7 +613,7 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
     }
 
     eframe::run_native(
-        "Qwen3-TTS Studio",
+        concat!("Qwen3-TTS Studio v", env!("CARGO_PKG_VERSION")),
         native_options,
         Box::new(|cc| {
             setup_cjk_fonts(&cc.egui_ctx);
