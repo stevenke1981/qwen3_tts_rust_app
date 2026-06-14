@@ -43,11 +43,29 @@ jobs:
       - name: Build Rust release
         run: cargo build --release --features "gui,ffi"
 
+      # ── 3b. Run tests ──────────────────────────────────────────
+      - name: Run tests
+        run: cargo test --release --features "gui,ffi"
+
+      # ── 3c. Verify setup script output ─────────────────────────
+      - name: Verify setup scripts
+        shell: pwsh
+        run: |
+          $bash_all = cargo run --release --features "ffi" -- setup-script --target all 2>&1
+          if ($bash_all -match "-DGGML_CUDA=ON.*-DGGML_VULKAN=ON.*-DGGML_METAL=ON") {
+            Write-Host "✅ bash setup-script --all: correct CMake flags" -ForegroundColor Green
+          } else { Write-Warning "bash --all missing expected CMake flags" }
+
+          $ps_cuda = cargo run --release --features "ffi" -- setup-script --target cuda --powershell 2>&1
+          if ($ps_cuda -match '"cuda".*"-DGGML_CUDA=ON"') {
+            Write-Host "✅ powershell setup-script --cuda: correct switch" -ForegroundColor Green
+          } else { Write-Warning "powershell --cuda missing expected switch" }
+
       # ── 4. Build qwen.dll from qwentts.cpp ─────────────────────
       - name: Checkout qwentts.cpp
         uses: actions/checkout@v4
         with:
-          repository: ServeurpersoCom/qwentts.cpp
+          repository: stevenke1981/qwentts.cpp
           path: qwentts.cpp
           submodules: recursive
 

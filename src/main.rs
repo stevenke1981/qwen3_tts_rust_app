@@ -58,6 +58,9 @@ enum Commands {
         ref_text: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "auto")]
         device: Device,
+        #[arg(long, default_value = "-1")]
+        /// GPU layers (-1=all, 0=CPU, N=first N layers on GPU). FFI path only.
+        n_gpu_layers: i32,
     },
 
     /// Inspect talker / codec GGUF metadata using llama-gguf.
@@ -178,6 +181,7 @@ fn main() -> Result<()> {
             ref_wav,
             ref_text,
             device,
+            n_gpu_layers,
         } => {
             let talker_path = talker
                 .or(cfg.talker)
@@ -206,6 +210,7 @@ fn main() -> Result<()> {
                 ref_wav,
                 ref_text,
                 ggml_backend: device.backend_str().map(str::to_string),
+                n_gpu_layers,
             };
 
             let custom_lib = qwen_tts_bin.as_deref();

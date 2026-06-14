@@ -625,7 +625,7 @@ impl super::qwentts_cli::Synthesizer for QwenFfiRunner {
                 true,
                 false,
                 req.ggml_backend.as_deref(),  // GPU backend selection
-                -1,                            // n_gpu_layers: all
+                req.n_gpu_layers,             // -1 = all, 0 = CPU, N = partial
             )
             .map_err(|e| anyhow::anyhow!("qwen init failed: {e}"))?;
 

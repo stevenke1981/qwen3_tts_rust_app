@@ -23,6 +23,9 @@ pub struct QwenTtsRequest {
     pub ref_wav: Option<PathBuf>,
     pub ref_text: Option<PathBuf>,
     pub ggml_backend: Option<String>,
+    /// GPU layer count (-1 = all, 0 = CPU, N = first N layers on GPU).
+    /// Used by FFI path (qwen.dll ABI v3); CLI process path ignores this.
+    pub n_gpu_layers: i32,
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -179,6 +182,7 @@ mod tests {
             ref_wav: None,
             ref_text: None,
             ggml_backend: None,
+            n_gpu_layers: -1,
         };
         let err = runner.synthesize(&req).unwrap_err();
         let msg = format!("{err:#}");
@@ -204,6 +208,7 @@ mod tests {
             ref_wav: None,
             ref_text: None,
             ggml_backend: None,
+            n_gpu_layers: -1,
         };
         let err = runner.synthesize(&req).unwrap_err();
         let msg = format!("{err:#}");
@@ -228,6 +233,7 @@ mod tests {
             ref_wav: None,
             ref_text: None,
             ggml_backend: None,
+            n_gpu_layers: -1,
         };
         let err = runner.synthesize(&req).unwrap_err();
         let msg = format!("{err:#}");
@@ -247,6 +253,7 @@ mod tests {
             ref_wav: Some(PathBuf::from("ref.wav")),
             ref_text: Some(PathBuf::from("ref.txt")),
             ggml_backend: Some("CUDA0".into()),
+            n_gpu_layers: -1,
         };
         assert_eq!(req.text, "test");
         assert_eq!(req.speaker.as_deref(), Some("vivian"));

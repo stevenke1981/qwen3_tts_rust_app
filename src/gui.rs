@@ -150,6 +150,7 @@ struct QwenTtsApp {
     ref_wav_path: String,
     ref_text_path: String,
     device: String,
+    n_gpu_layers: i32,
 
     // --- State ---
     mode: SynthesisMode,
@@ -177,6 +178,7 @@ impl Default for QwenTtsApp {
             ref_wav_path: String::new(),
             ref_text_path: String::new(),
             device: "auto".into(),
+            n_gpu_layers: -1,
             mode: SynthesisMode::Base,
             is_generating: false,
             log: LogCollector::new(),
@@ -408,6 +410,7 @@ impl QwenTtsApp {
             } else {
                 None
             },
+            n_gpu_layers: self.n_gpu_layers,
         };
 
         let runner: Box<dyn Synthesizer> = runner_from(
