@@ -20,7 +20,7 @@ env:
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       # ── 1. Checkout main repo ──────────────────────────────────
@@ -61,7 +61,17 @@ jobs:
             Write-Host "✅ powershell setup-script --cuda: correct switch" -ForegroundColor Green
           } else { Write-Warning "powershell --cuda missing expected switch" }
 
-      # ── 4. Build qwen.dll from qwentts.cpp ─────────────────────
+      # ── 4. Install GPU toolkits (CUDA + Vulkan) ──────────────
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2
+        with:
+          cuda: '12.6'
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: choco install vulkan-sdk --no-progress -y
+
+      # ── 5. Build qwen.dll from qwentts.cpp ─────────────────────
       - name: Checkout qwentts.cpp
         uses: actions/checkout@v4
         with:
@@ -76,11 +86,11 @@ jobs:
             -DGGML_CUDA=ON -DGGML_VULKAN=ON
           cmake --build build --config Release
 
-      # ── 5. Install 7-Zip for password-protected archive ────────
+      # ── 6. Install 7-Zip for password-protected archive ────────
       - name: Install 7-Zip
         run: choco install 7zip --no-progress -y
 
-      # ── 6. List build outputs (diagnostic) ────────────────────
+      # ── 7. List build outputs (diagnostic) ────────────────────
       - name: List build outputs
         shell: pwsh
         run: |
@@ -89,11 +99,13 @@ jobs:
           Write-Output "=== qwen.dll ==="
           Get-ChildItem -Recurse qwentts.cpp\build\*.dll | Select-Object FullName, Length
 
-      # ── 7. Stage all files ─────────────────────────────────────
+      # ── 8. Stage all files ─────────────────────────────────────
       - name: Stage files
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path staging\scripts, staging\models -Force | Out-Null
+          New-Item -ItemType Directory -Path staging\scripts -Force | Out-Null
+          New-Item -ItemType Directory -Path staging\models -Force | Out-Null
+          New-Item -ItemType Directory -Path staging\output -Force | Out-Null
 
           Copy-Item target\release\qwen-tts-app.exe staging\
 
@@ -109,14 +121,14 @@ jobs:
           Copy-Item README.md staging\
           Copy-Item scripts\* staging\scripts\ -ErrorAction SilentlyContinue
 
-      # ── 8. Create password-protected zip ───────────────────────
+      # ── 9. Create password-protected zip ───────────────────────
       - name: Package zip
         shell: pwsh
         run: |
           $pass = "091968559"
           & "C:\Program Files\7-Zip\7z.exe" a -tzip "-p$pass" -mx=9 qwen3-tts-app-windows.zip .\staging\*
 
-      # ── 9. Upload as workflow artifact ─────────────────────────
+      # ── 10. Upload as workflow artifact ─────────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
