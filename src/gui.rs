@@ -638,7 +638,7 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
     };
 
     let mut app = QwenTtsApp::default();
-    // Pre-fill from config if available
+    // Apply AppConfig defaults to override built-in hardcoded defaults
     if let Some(bin) = cfg.qwen_tts_bin {
         app.qwen_tts_bin = bin.to_string_lossy().to_string();
     }
@@ -648,6 +648,8 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
     if let Some(codec) = cfg.codec {
         app.codec_path = codec.to_string_lossy().to_string();
     }
+    app.language = cfg.language.clone();
+    app.device = cfg.device.clone();
     app.available_devices = available;
     app.log.push(format!(
         "Available devices: {}",

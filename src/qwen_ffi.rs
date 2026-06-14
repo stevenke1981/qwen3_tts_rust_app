@@ -297,6 +297,45 @@ impl QwenLibrary {
         })
     }
 
+    /// Minimum required ABI version: we call `backend` and `n_gpu_layers`
+    /// fields (ABI v3) in `QtInitParamsRaw`. Older builds produce undefined
+    /// behaviour, so we reject them upfront.
+    const REQUIRED_ABI_VERSION: i32 = 3;
+
+    /// Verify the loaded library exports at least ABI v3.
+    /// Returns an error with the detected version if too old.
+    pub fn check_abi(&self) -> Result<(), QwenFfiError> {
+        let mut params = QtInitParamsRaw {
+            abi_version: Self::REQUIRED_ABI_VERSION,
+            talker_path: std::ptr::null(),
+            codec_path: std::ptr::null(),
+            use_fa: false,
+            clamp_fp16: false,
+            backend: std::ptr::null(),
+            n_gpu_layers: -1,
+        };
+        unsafe {
+            (self.qt_init_default_params)(&mut params);
+        }
+        if params.abi_version < Self::REQUIRED_ABI_VERSION {
+            let lib_abi = params.abi_version;
+            let required = Self::REQUIRED_ABI_VERSION;
+            return Err(QwenFfiError::SynthesisFailed(
+                QtStatus::InvalidParams,
+                format!(
+                    "qwen.dll ABI v{lib_abi} is too old; need v{required}. \
+                     Rebuild qwentts.cpp with the latest source."
+                ),
+            ));
+        }
+        tracing::info!(
+            "qwen.dll reports ABI version {}, required >= {}",
+            params.abi_version,
+            Self::REQUIRED_ABI_VERSION,
+        );
+        Ok(())
+    }
+
     /// Return the library version string.
     #[allow(dead_code)]
     pub fn version(&self) -> &str {
@@ -603,6 +642,7 @@ impl QwenFfiRunner {
         codec_path: PathBuf,
     ) -> Result<Self, QwenFfiError> {
         let lib = QwenLibrary::load(lib_path)?;
+        lib.check_abi()?;
         Ok(Self {
             lib,
             talker_path,

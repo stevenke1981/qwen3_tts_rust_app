@@ -80,6 +80,40 @@ pub trait Synthesizer: Send {
 }
 
 impl QwenTtsRunner {
+    /// Build a `Command` for the qwen-tts binary from the given request.
+    /// Does not validate file existence — use `synthesize()` for that.
+    pub(crate) fn build_command(&self, req: &QwenTtsRequest) -> Command {
+        let mut cmd = Command::new(&self.qwen_tts_bin);
+        cmd.arg("--model")
+            .arg(&req.talker)
+            .arg("--codec")
+            .arg(&req.codec)
+            .arg("--lang")
+            .arg(&req.lang)
+            .arg("-o")
+            .arg(&req.out)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        if let Some(speaker) = &req.speaker {
+            cmd.arg("--speaker").arg(speaker);
+        }
+        if let Some(instruct) = &req.instruct {
+            cmd.arg("--instruct").arg(instruct);
+        }
+        if let Some(ref_wav) = &req.ref_wav {
+            cmd.arg("--ref-wav").arg(ref_wav);
+        }
+        if let Some(ref_text) = &req.ref_text {
+            cmd.arg("--ref-text").arg(ref_text);
+        }
+        if let Some(backend) = &req.ggml_backend {
+            cmd.env("GGML_BACKEND", backend);
+        }
+        cmd
+    }
+
     pub fn synthesize(&self, req: &QwenTtsRequest) -> Result<SynthesisOutput> {
         // --- Validation (cheapest checks first) ---
         if req.text.trim().is_empty() {
@@ -116,36 +150,7 @@ impl QwenTtsRunner {
             }
         }
 
-        // Build command
-        let mut cmd = Command::new(&self.qwen_tts_bin);
-        cmd.arg("--model")
-            .arg(&req.talker)
-            .arg("--codec")
-            .arg(&req.codec)
-            .arg("--lang")
-            .arg(&req.lang)
-            .arg("-o")
-            .arg(&req.out)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-
-        if let Some(speaker) = &req.speaker {
-            cmd.arg("--speaker").arg(speaker);
-        }
-        if let Some(instruct) = &req.instruct {
-            cmd.arg("--instruct").arg(instruct);
-        }
-        if let Some(ref_wav) = &req.ref_wav {
-            cmd.arg("--ref-wav").arg(ref_wav);
-        }
-        if let Some(ref_text) = &req.ref_text {
-            cmd.arg("--ref-text").arg(ref_text);
-        }
-        if let Some(backend) = &req.ggml_backend {
-            cmd.env("GGML_BACKEND", backend);
-        }
-
+        let mut cmd = self.build_command(req);
         tracing::debug!(
             "spawning: {} --model {} --codec {} --lang {} -o {}",
             self.qwen_tts_bin.display(),
@@ -300,5 +305,100 @@ mod tests {
     fn test_default_paths() {
         let p = Path::new("qwentts.cpp/build/qwen-tts");
         assert!(p.ends_with("qwen-tts"));
+    }
+
+    // ── Command construction tests (no spawning) ──
+
+    /// Helper to get the Debug string of a Command for assertion purposes.
+    fn cmd_debug(runner: &QwenTtsRunner, req: &QwenTtsRequest) -> String {
+        format!("{:?}", runner.build_command(req))
+    }
+
+    fn make_req(mut customize: impl FnMut(&mut QwenTtsRequest)) -> QwenTtsRequest {
+        let mut req = QwenTtsRequest {
+            text: "hello".into(),
+            out: PathBuf::from("out.wav"),
+            talker: PathBuf::from("talker.gguf"),
+            codec: PathBuf::from("codec.gguf"),
+            lang: "English".into(),
+            speaker: None,
+            instruct: None,
+            ref_wav: None,
+            ref_text: None,
+            ggml_backend: None,
+            n_gpu_layers: -1,
+            tts_params: TtsParams::default(),
+        };
+        customize(&mut req);
+        req
+    }
+
+    #[test]
+    fn test_cmd_contains_basic_args() {
+        let runner = QwenTtsRunner {
+            qwen_tts_bin: PathBuf::from("qwen-tts"),
+        };
+        let req = make_req(|_| {});
+        let dbg = cmd_debug(&runner, &req);
+        assert!(dbg.contains("qwen-tts"), "should include binary path");
+        assert!(dbg.contains("--model"), "should include --model");
+        assert!(dbg.contains("talker.gguf"), "should include talker path");
+        assert!(dbg.contains("--codec"), "should include --codec");
+        assert!(dbg.contains("codec.gguf"), "should include codec path");
+        assert!(dbg.contains("--lang"), "should include --lang");
+        assert!(dbg.contains("English"), "should include default lang");
+        assert!(dbg.contains("-o"), "should include -o");
+        assert!(dbg.contains("out.wav"), "should include output path");
+    }
+
+    #[test]
+    fn test_cmd_includes_speaker() {
+        let runner = QwenTtsRunner {
+            qwen_tts_bin: PathBuf::from("qwen-tts"),
+        };
+        let req = make_req(|r| r.speaker = Some("vivian".into()));
+        let dbg = cmd_debug(&runner, &req);
+        assert!(dbg.contains("--speaker"), "--speaker flag present");
+        assert!(dbg.contains("vivian"), "speaker name present");
+    }
+
+    #[test]
+    fn test_cmd_includes_instruct() {
+        let runner = QwenTtsRunner {
+            qwen_tts_bin: PathBuf::from("qwen-tts"),
+        };
+        let req = make_req(|r| r.instruct = Some("happy".into()));
+        let dbg = cmd_debug(&runner, &req);
+        assert!(dbg.contains("--instruct"), "--instruct flag present");
+        assert!(dbg.contains("happy"), "instruct value present");
+    }
+
+    #[test]
+    fn test_cmd_includes_voice_clone() {
+        let runner = QwenTtsRunner {
+            qwen_tts_bin: PathBuf::from("qwen-tts"),
+        };
+        let req = make_req(|r| {
+            r.ref_wav = Some(PathBuf::from("ref.wav"));
+            r.ref_text = Some(PathBuf::from("ref.txt"));
+        });
+        let dbg = cmd_debug(&runner, &req);
+        assert!(dbg.contains("--ref-wav"), "--ref-wav flag present");
+        assert!(dbg.contains("ref.wav"), "ref wav path present");
+        assert!(dbg.contains("--ref-text"), "--ref-text flag present");
+        assert!(dbg.contains("ref.txt"), "ref text path present");
+    }
+
+    #[test]
+    fn test_cmd_includes_backend_env() {
+        let runner = QwenTtsRunner {
+            qwen_tts_bin: PathBuf::from("qwen-tts"),
+        };
+        let req = make_req(|r| r.ggml_backend = Some("CUDA0".into()));
+        let cmd = runner.build_command(&req);
+        let has_backend = cmd.get_envs().any(|(k, v)| {
+            k.to_str() == Some("GGML_BACKEND") && v == Some(std::ffi::OsStr::new("CUDA0"))
+        });
+        assert!(has_backend, "GGML_BACKEND=CUDA0 should be set");
     }
 }

@@ -116,10 +116,37 @@ pub fn inspect_pair(talker: &Path, codec: &Path) -> Result<String> {
         .get_string("general.architecture")
         .unwrap_or("unknown");
 
+    let talker_has_tts_keys = talker_file.data.get_string("qwen3tts.type").is_some()
+        || talker_file
+            .data
+            .get_u32("qwen3tts.talker.num_speakers")
+            .is_some()
+        || talker_file
+            .data
+            .get_u32("qwen3tts.audio.channels")
+            .is_some();
+
+    let codec_has_codec_keys = codec_file.data.get_string("qwen3tts.type").is_some()
+        || codec_file
+            .data
+            .get_u32("qwen3tts.codec.codebooks")
+            .is_some()
+        || codec_file
+            .data
+            .get_u32("qwen3tts.audio.codec_dim")
+            .is_some();
+
     if talker_arch.contains("qwen3") {
-        output.push_str(&format!(
-            "  ✅ Talker architecture '{talker_arch}' looks like Qwen3-TTS.\n"
-        ));
+        if talker_has_tts_keys {
+            output.push_str(&format!(
+                "  ✅ Talker architecture '{talker_arch}' with TTS metadata — confirmed Qwen3-TTS.\n"
+            ));
+        } else {
+            output.push_str(&format!(
+                "  ⚠ Talker architecture '{talker_arch}' but no TTS metadata keys found.\n\
+                  ⚠ This may be a plain Qwen3 LLM GGUF, not a TTS model.\n"
+            ));
+        }
     } else {
         output.push_str(&format!(
             "  ⚠ Talker architecture '{talker_arch}' — may not be Qwen3-TTS.\n"
@@ -128,13 +155,28 @@ pub fn inspect_pair(talker: &Path, codec: &Path) -> Result<String> {
 
     if codec_arch.contains("qwen3") || codec_arch.contains("audio") || codec_arch.contains("codec")
     {
-        output.push_str(&format!(
-            "  ✅ Codec architecture '{codec_arch}' looks like audio codec.\n"
-        ));
+        if codec_has_codec_keys {
+            output.push_str(&format!(
+                "  ✅ Codec architecture '{codec_arch}' with codec metadata — confirmed TTS codec.\n"
+            ));
+        } else {
+            output.push_str(&format!(
+                "  ⚠ Codec architecture '{codec_arch}' but no TTS codec metadata keys found.\n\
+                  ⚠ This may be a plain Qwen3 LLM GGUF or a non-TTS audio model.\n"
+            ));
+        }
     } else {
         output.push_str(&format!(
             "  ⚠ Codec architecture '{codec_arch}' — may not be correct.\n"
         ));
+    }
+
+    // Add TTS type classification if available
+    if let Some(tts_type) = talker_file.data.get_string("qwen3tts.type") {
+        output.push_str(&format!("  ℹ Talker TTS type: {tts_type}\n"));
+    }
+    if let Some(tts_type) = codec_file.data.get_string("qwen3tts.type") {
+        output.push_str(&format!("  ℹ Codec TTS type: {tts_type}\n"));
     }
 
     Ok(output)
