@@ -122,7 +122,12 @@ impl QwenTtsRunner {
         if !self.qwen_tts_bin.exists() {
             bail!(
                 "qwen-tts binary not found: {}\n\
-                 Run setup to build it: cargo run -- setup-script --target cuda > setup.sh && bash setup.sh",
+                 Build qwentts.cpp manually or run:\n\
+                   cargo run --release -- setup-script --target cuda > setup.sh\n\
+                   bash setup.sh                      # Linux/macOS/WSL\n\
+                 For Windows:\n\
+                   cargo run --release -- setup-script --target cuda --powershell > setup.ps1\n\
+                   powershell -File setup.ps1",
                 self.qwen_tts_bin.display()
             );
         }

@@ -650,10 +650,10 @@ impl QwenFfiRunner {
         })
     }
 
-    /// Check whether qwen library can be loaded (probing).
+    /// Check whether qwen library can be loaded AND has ABI v3+ (probing).
     #[allow(dead_code)]
     pub fn is_available(lib_path: Option<&Path>) -> bool {
-        QwenLibrary::load(lib_path).is_ok()
+        Self::try_new(lib_path, PathBuf::new(), PathBuf::new()).is_ok()
     }
 }
 

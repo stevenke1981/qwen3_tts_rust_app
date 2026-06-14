@@ -231,9 +231,7 @@ impl eframe::App for QwenTtsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Wrap in catch_unwind so any panic (from button handlers, etc.) is
         // caught, logged, and the GUI continues instead of crashing.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.render_ui(ctx)
-        }));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.render_ui(ctx)));
         if let Err(panic) = result {
             let msg = if let Some(s) = panic.downcast_ref::<&str>() {
                 (*s).to_string()
