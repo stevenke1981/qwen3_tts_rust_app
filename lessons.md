@@ -1,6 +1,11 @@
 # Lessons Learned
 
 ---
+## Lesson #8 — 2026-06-14
+**Trigger:** GUI app flashed and exited silently on double-click; CLI commands produced no output.
+**Rule:** `#![windows_subsystem = "windows"]` suppresses the console for ALL modes (both GUI and CLI). Instead of using this attribute, compile as console-subsystem and let GUI mode call `ShowWindow(GetConsoleWindow(), SW_HIDE)` on startup. This way CLI commands get stdout/stderr, and GUI mode still hides the console window.
+**Source:** Fix double-click crash and CLI output
+---
 ## Lesson #1 — 2026-06-14
 **Trigger:** Rust build failed because `protoc` was missing when compiling `llama-gguf` crate.
 **Rule:** Before running `cargo build`, check if `llama-gguf` (or similar protobuf-dependent crates) are in the dependency tree. If so, ensure `protoc` is installed first. On Windows without admin rights, download the binary directly from GitHub and set `$env:PROTOC` to its path.
