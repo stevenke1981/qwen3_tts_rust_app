@@ -162,6 +162,8 @@ struct QwenTtsApp {
     is_generating: bool,
     log: LogCollector,
     last_wav: Option<PathBuf>,
+    /// Human-readable summary of runtime probing results.
+    runtime_probe_summary: String,
 
     // Audio playback
     _stream: Option<OutputStream>,
@@ -217,6 +219,7 @@ impl Default for QwenTtsApp {
             is_generating: false,
             log: LogCollector::new(),
             last_wav: None,
+            runtime_probe_summary: String::new(),
             _stream: None,
             sink: None,
             is_playing: false,
@@ -298,6 +301,25 @@ impl eframe::App for QwenTtsApp {
                                     ui.selectable_value(&mut self.device, d.clone(), d);
                                 }
                             });
+                        // Show runtime probe status
+                        if !self.runtime_probe_summary.is_empty() {
+                            let (color, icon) = if self.runtime_probe_summary.starts_with("✅") {
+                                (egui::Color32::GREEN, "🟢")
+                            } else if self.runtime_probe_summary.starts_with("⚠") {
+                                (egui::Color32::YELLOW, "🟡")
+                            } else {
+                                (egui::Color32::GRAY, "⚪")
+                            };
+                            ui.colored_label(color, icon);
+                            if ui
+                                .small(egui::RichText::new("runtime").color(color))
+                                .on_hover_text(&self.runtime_probe_summary)
+                                .clicked()
+                            {
+                                self.log
+                                    .push(format!("Runtime: {}", self.runtime_probe_summary));
+                            }
+                        }
                         ui.end_row();
 
                         // Mode-specific fields
@@ -627,9 +649,6 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
         );
     }
 
-    // ── Probe available devices ──
-    let available = probe_available_devices();
-
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
@@ -650,12 +669,19 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
     }
     app.language = cfg.language.clone();
     app.device = cfg.device.clone();
+
+    // ── Probe runtime + available devices ──
+    let runtime = probe_runtime(&app.qwen_tts_bin);
+    let (available, device_annotations) = probe_available_devices(&runtime);
     app.available_devices = available;
-    app.log.push(format!(
-        "Available devices: {}",
-        app.available_devices.join(", ")
-    ));
-    // If the only devices are "auto" and "CPU", warn about missing GPU
+    app.runtime_probe_summary = runtime.summary.clone();
+    app.log
+        .push(format!("🔍 Runtime probe: {}", runtime.summary));
+
+    // Log available backends with annotations
+    for (dev, annotation) in app.available_devices.iter().zip(device_annotations.iter()) {
+        app.log.push(format!("  {dev}: {annotation}"));
+    }
     if app.available_devices.len() <= 2 {
         app.log.push(
             "ℹ️ Only CPU detected. For GPU acceleration, install NVIDIA CUDA or Vulkan drivers."
@@ -718,33 +744,114 @@ fn is_another_instance_running() -> bool {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// GPU device probing (OS-level DLL detection)
+// Backend / runtime probing — cross-references OS driver checks
+// with what the actual qwentts.cpp runtime supports.
 // ═══════════════════════════════════════════════════════════════
 
+/// Result of runtime availability probing.
+struct RuntimeProbeResult {
+    /// Whether qwen.dll (FFI shared library) can be loaded.
+    ffi_available: bool,
+    /// Whether a qwen-tts process binary exists at the configured path.
+    #[allow(dead_code)]
+    has_process_binary: bool,
+    /// Human-readable summary for the log / UI.
+    summary: String,
+}
+
+/// Try to detect which qwen runtime is available.
+fn probe_runtime(qwen_tts_bin: &str) -> RuntimeProbeResult {
+    let ffi_available = cfg!(feature = "ffi") && {
+        #[cfg(feature = "ffi")]
+        {
+            QwenFfiRunner::is_available(None)
+        }
+        #[cfg(not(feature = "ffi"))]
+        {
+            false
+        }
+    };
+
+    let has_process_binary = {
+        let p = Path::new(qwen_tts_bin);
+        p.exists() && p.is_file()
+    };
+
+    let summary = if ffi_available {
+        format!(
+            "✅ qwen.dll (FFI) available {}{}",
+            if has_process_binary {
+                "+ binary also present"
+            } else {
+                ""
+            },
+            if cfg!(not(feature = "ffi")) {
+                " (built without FFI feature)"
+            } else {
+                ""
+            }
+        )
+    } else if has_process_binary {
+        "✅ qwen-tts binary found (process runner)".to_string()
+    } else {
+        "⚠ No qwen runtime found — install qwen.dll or build qwentts.cpp".to_string()
+    };
+
+    RuntimeProbeResult {
+        ffi_available,
+        has_process_binary,
+        summary,
+    }
+}
+
 /// Probe available GGML backends by checking for GPU driver DLLs.
-/// Always includes CPU as a fallback.
-fn probe_available_devices() -> Vec<String> {
-    let mut devices = Vec::new();
+/// When a runtime has been confirmed (FFI or binary), labels discriminate
+/// backends that are "driver detected" from "runtime confirmed".
+fn probe_available_devices(runtime: &RuntimeProbeResult) -> (Vec<String>, Vec<String>) {
+    let mut devices: Vec<String> = Vec::new();
+    let mut annotations: Vec<String> = Vec::new();
+
     devices.push("auto".to_string());
+    annotations.push("auto-detect".to_string());
+
     devices.push("CPU".to_string());
+    annotations.push("always available".to_string());
 
     #[cfg(target_os = "windows")]
     {
-        if has_system_dll("nvcuda.dll") {
-            // NVIDIA CUDA driver present → CUDA backend should work
-            // Try to detect multiple GPUs (optional, just report CUDA0)
+        let nvidia_driver = has_system_dll("nvcuda.dll");
+        let vulkan_driver = has_system_dll("vulkan-1.dll");
+
+        // CUDA — needs NVIDIA driver AND runtime support
+        if nvidia_driver {
             devices.push("CUDA0".to_string());
+            if runtime.ffi_available {
+                annotations.push("✅ driver found + FFI runtime".to_string());
+            } else {
+                annotations.push("⚠ driver found, runtime unconfirmed".to_string());
+            }
         }
-        if has_system_dll("vulkan-1.dll") {
+        // Vulkan — needs Vulkan driver AND runtime support
+        if vulkan_driver {
             devices.push("Vulkan0".to_string());
+            if runtime.ffi_available {
+                annotations.push("✅ driver found + FFI runtime".to_string());
+            } else {
+                annotations.push("⚠ driver found, runtime unconfirmed".to_string());
+            }
         }
     }
     #[cfg(target_os = "macos")]
     {
         devices.push("Metal".to_string());
+        if runtime.ffi_available {
+            annotations.push("✅ FFI runtime confirmed".to_string());
+        } else {
+            annotations.push("⚠ driver found, runtime unconfirmed".to_string());
+        }
     }
 
-    devices
+    (devices, annotations)
 }
 
 /// Check whether a given system DLL can be loaded (indicating the driver exists).
