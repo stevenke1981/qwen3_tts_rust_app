@@ -6,6 +6,30 @@ use std::{
     process::{Command, Stdio},
 };
 
+/// Advanced TTS generation parameters with sensible defaults.
+#[derive(Debug, Clone, Copy)]
+pub struct TtsParams {
+    pub temperature: f32,
+    pub top_k: i32,
+    pub top_p: f32,
+    pub repetition_penalty: f32,
+    pub seed: i64,
+    pub max_new_tokens: i32,
+}
+
+impl Default for TtsParams {
+    fn default() -> Self {
+        Self {
+            temperature: 0.9,
+            top_k: 50,
+            top_p: 1.0,
+            repetition_penalty: 1.05,
+            seed: -1, // -1 = use random seed
+            max_new_tokens: 2048,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QwenTtsRunner {
     pub qwen_tts_bin: PathBuf,
@@ -26,6 +50,8 @@ pub struct QwenTtsRequest {
     /// GPU layer count (-1 = all, 0 = CPU, N = first N layers on GPU).
     /// Used by FFI path (qwen.dll ABI v3); CLI process path ignores this.
     pub n_gpu_layers: i32,
+    /// Advanced synthesis parameters (temperature, top_k, etc.)
+    pub tts_params: TtsParams,
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -183,6 +209,7 @@ mod tests {
             ref_text: None,
             ggml_backend: None,
             n_gpu_layers: -1,
+            tts_params: TtsParams::default(),
         };
         let err = runner.synthesize(&req).unwrap_err();
         let msg = format!("{err:#}");
@@ -209,6 +236,7 @@ mod tests {
             ref_text: None,
             ggml_backend: None,
             n_gpu_layers: -1,
+            tts_params: TtsParams::default(),
         };
         let err = runner.synthesize(&req).unwrap_err();
         let msg = format!("{err:#}");
@@ -234,6 +262,7 @@ mod tests {
             ref_text: None,
             ggml_backend: None,
             n_gpu_layers: -1,
+            tts_params: TtsParams::default(),
         };
         let err = runner.synthesize(&req).unwrap_err();
         let msg = format!("{err:#}");
@@ -254,6 +283,7 @@ mod tests {
             ref_text: Some(PathBuf::from("ref.txt")),
             ggml_backend: Some("CUDA0".into()),
             n_gpu_layers: -1,
+            tts_params: TtsParams::default(),
         };
         assert_eq!(req.text, "test");
         assert_eq!(req.speaker.as_deref(), Some("vivian"));

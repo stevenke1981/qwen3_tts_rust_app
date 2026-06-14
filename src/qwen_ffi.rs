@@ -424,6 +424,12 @@ impl OwnedTtsParams {
     /// If `streaming` is `Some`, sets up `on_chunk` + `on_chunk_user_data`
     /// so `qt_synthesize` emits audio chunks via the provided callback.
     #[allow(clippy::too_many_arguments)]
+    /// Build synthesis params.
+    ///
+    /// If `tts_params` is `Some`, overrides temperature, top_k, top_p,
+    /// repetition_penalty, seed, and max_new_tokens with the given values.
+    /// Otherwise uses the defaults from `super::qwentts_cli::TtsParams::default()`.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         lib: &QwenLibrary,
         text: &str,
@@ -432,6 +438,7 @@ impl OwnedTtsParams {
         speaker: Option<&str>,
         seed: i64,
         streaming: Option<StreamingConfig>,
+        tts_params: Option<&super::qwentts_cli::TtsParams>,
     ) -> Result<Self, QwenFfiError> {
         let text_c = CString::new(text)
             .map_err(|_| QwenFfiError::InvalidParams("text contains null byte".into()))?;
@@ -457,6 +464,9 @@ impl OwnedTtsParams {
         // Prepare streaming callback (heap-allocate wrapper, pass pointer to C)
         let streaming_wrapper = streaming.map(|sc| Box::new(CbWrapper { cb: sc.callback }));
 
+        let p = tts_params.copied().unwrap_or_default();
+        let default_seed = if seed == -1 { p.seed } else { seed };
+
         let mut raw = QtTtsParamsRaw {
             abi_version: 2,
             text: text_c.as_ptr(),
@@ -466,17 +476,17 @@ impl OwnedTtsParams {
             ref_audio_24k: std::ptr::null(),
             ref_n_samples: 0,
             ref_text: std::ptr::null(),
-            seed,
-            max_new_tokens: 2048,
+            seed: default_seed,
+            max_new_tokens: p.max_new_tokens,
             do_sample: true,
-            temperature: 0.9,
-            top_k: 50,
-            top_p: 1.0,
-            repetition_penalty: 1.05,
+            temperature: p.temperature,
+            top_k: p.top_k,
+            top_p: p.top_p,
+            repetition_penalty: p.repetition_penalty,
             subtalker_do_sample: true,
-            subtalker_temperature: 0.9,
-            subtalker_top_k: 50,
-            subtalker_top_p: 1.0,
+            subtalker_temperature: p.temperature,
+            subtalker_top_k: p.top_k,
+            subtalker_top_p: p.top_p,
             dump_dir: std::ptr::null(),
             cancel: None,
             cancel_user_data: std::ptr::null_mut(),
@@ -504,7 +514,12 @@ impl OwnedTtsParams {
         raw.lang = lang_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
         raw.instruct = instruct_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
         raw.speaker = speaker_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-        raw.seed = seed;
+        raw.seed = default_seed;
+        raw.max_new_tokens = p.max_new_tokens;
+        raw.temperature = p.temperature;
+        raw.top_k = p.top_k;
+        raw.top_p = p.top_p;
+        raw.repetition_penalty = p.repetition_penalty;
         if streaming_wrapper.is_some() {
             raw.on_chunk = Some(audio_chunk_trampoline as unsafe extern "C" fn(_, _, _) -> bool);
         }
@@ -636,8 +651,9 @@ impl super::qwentts_cli::Synthesizer for QwenFfiRunner {
                 Some(&req.lang),
                 req.instruct.as_deref(),
                 req.speaker.as_deref(),
-                -1,   // random seed
+                req.tts_params.seed,  // -1 = random seed
                 None, // buffered mode (no streaming callback)
+                Some(&req.tts_params),
             )?;
 
             let samples = self.lib.synthesize(ctx, &params.raw)?;

@@ -17,7 +17,7 @@ use std::{
 };
 
 use crate::config::AppConfig;
-use crate::qwentts_cli::{QwenTtsRequest, QwenTtsRunner, SynthesisOutput, Synthesizer};
+use crate::qwentts_cli::{QwenTtsRequest, QwenTtsRunner, SynthesisOutput, Synthesizer, TtsParams};
 
 #[cfg(feature = "ffi")]
 use crate::qwen_ffi::QwenFfiRunner;
@@ -152,6 +152,13 @@ struct QwenTtsApp {
     device: String,
     n_gpu_layers: i32,
     available_devices: Vec<String>,
+    // Advanced TTS params
+    temperature: f32,
+    top_k: i32,
+    top_p: f32,
+    repetition_penalty: f32,
+    seed: i64,
+    max_new_tokens: i32,
 
     // --- State ---
     mode: SynthesisMode,
@@ -181,6 +188,12 @@ impl Default for QwenTtsApp {
             device: "auto".into(),
             n_gpu_layers: -1,
             available_devices: Vec::new(),
+            temperature: 0.9,
+            top_k: 50,
+            top_p: 1.0,
+            repetition_penalty: 1.05,
+            seed: -1,
+            max_new_tokens: 2048,
             mode: SynthesisMode::Base,
             is_generating: false,
             log: LogCollector::new(),
@@ -318,6 +331,50 @@ impl eframe::App for QwenTtsApp {
                             });
                     });
 
+                // --- Advanced TTS parameters ---
+                egui::CollapsingHeader::new("Advanced TTS Settings")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        egui::Grid::new("advanced_params")
+                            .striped(true)
+                            .min_col_width(120.0)
+                            .show(ui, |ui| {
+                                ui.label("Temperature:");
+                                ui.add(egui::Slider::new(&mut self.temperature, 0.0..=2.0).step_by(0.01));
+                                ui.end_row();
+
+                                ui.label("Top-K:");
+                                ui.add(egui::Slider::new(&mut self.top_k, 0..=100).step_by(1.0));
+                                ui.end_row();
+
+                                ui.label("Top-P:");
+                                ui.add(egui::Slider::new(&mut self.top_p, 0.0..=1.0).step_by(0.01));
+                                ui.end_row();
+
+                                ui.label("Repetition Penalty:");
+                                ui.add(egui::Slider::new(&mut self.repetition_penalty, 1.0..=2.0).step_by(0.01));
+                                ui.end_row();
+
+                                ui.label("Seed (-1 = random):");
+                                ui.add(egui::Slider::new(&mut self.seed, -1..=999999).step_by(1.0));
+                                ui.end_row();
+
+                                ui.label("Max New Tokens:");
+                                ui.add(egui::Slider::new(&mut self.max_new_tokens, 64..=8192).step_by(64.0));
+                                ui.end_row();
+
+                                // Per-mode preset info
+                                ui.label("Mode Preset:");
+                                let preset_hint = match self.mode {
+                                    SynthesisMode::Base => "Balanced: temp 0.9, top-k 50, top-p 1.0".to_string(),
+                                    SynthesisMode::CustomVoice => "Voice clone: temp 0.8, top-k 40, top-p 0.95".to_string(),
+                                    SynthesisMode::VoiceDesign => "Design: temp 1.0, top-k 60, top-p 1.0".to_string(),
+                                };
+                                ui.label(preset_hint);
+                                ui.end_row();
+                            });
+                    });
+
                 ui.separator();
 
                 // --- Generate button ---
@@ -375,6 +432,15 @@ impl eframe::App for QwenTtsApp {
 
 impl QwenTtsApp {
     fn start_generation(&mut self, ctx: &egui::Context) {
+        // Auto-generate output path if it matches the default
+        if self.output_path == "output.wav" || self.output_path.is_empty() {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.output_path = format!("output/voice_{}.wav", ts);
+        }
+
         let req = QwenTtsRequest {
             text: self.text.clone(),
             out: PathBuf::from(&self.output_path),
@@ -407,6 +473,14 @@ impl QwenTtsApp {
                 None
             },
             n_gpu_layers: self.n_gpu_layers,
+            tts_params: TtsParams {
+                temperature: self.temperature,
+                top_k: self.top_k,
+                top_p: self.top_p,
+                repetition_penalty: self.repetition_penalty,
+                seed: self.seed,
+                max_new_tokens: self.max_new_tokens,
+            },
         };
 
         // Try FFI first (auto-search qwen.dll in cwd), fall back to

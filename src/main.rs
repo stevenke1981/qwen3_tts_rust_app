@@ -61,6 +61,18 @@ enum Commands {
         #[arg(long, default_value = "-1")]
         /// GPU layers (-1=all, 0=CPU, N=first N layers on GPU). FFI path only.
         n_gpu_layers: i32,
+        #[arg(long, default_value = "0.9")]
+        temperature: f32,
+        #[arg(long, default_value = "50")]
+        top_k: i32,
+        #[arg(long, default_value = "1.0")]
+        top_p: f32,
+        #[arg(long, default_value = "1.05")]
+        repetition_penalty: f32,
+        #[arg(long, default_value = "-1")]
+        seed: i64,
+        #[arg(long, default_value = "2048")]
+        max_new_tokens: i32,
     },
 
     /// Inspect talker / codec GGUF metadata using llama-gguf.
@@ -182,6 +194,12 @@ fn main() -> Result<()> {
             ref_text,
             device,
             n_gpu_layers,
+            temperature,
+            top_k,
+            top_p,
+            repetition_penalty,
+            seed,
+            max_new_tokens,
         } => {
             let talker_path = talker
                 .or(cfg.talker)
@@ -211,6 +229,14 @@ fn main() -> Result<()> {
                 ref_text,
                 ggml_backend: device.backend_str().map(str::to_string),
                 n_gpu_layers,
+                tts_params: qwentts_cli::TtsParams {
+                    temperature,
+                    top_k,
+                    top_p,
+                    repetition_penalty,
+                    seed,
+                    max_new_tokens,
+                },
             };
 
             // FFI auto-searches qwen.dll in cwd/build/; no separate --qwen-lib flag yet.
