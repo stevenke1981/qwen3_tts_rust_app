@@ -229,6 +229,31 @@ impl Default for QwenTtsApp {
 
 impl eframe::App for QwenTtsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Wrap in catch_unwind so any panic (from button handlers, etc.) is
+        // caught, logged, and the GUI continues instead of crashing.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.render_ui(ctx)
+        }));
+        if let Err(panic) = result {
+            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown error".to_string()
+            };
+            self.log.push(format!("⚠ Internal error: {msg}"));
+            ctx.request_repaint();
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// App logic (outside the eframe::App impl so methods are free)
+// ═══════════════════════════════════════════════════════════════
+impl QwenTtsApp {
+    /// Render the full UI (called from `update()` under `catch_unwind`).
+    fn render_ui(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Qwen3-TTS Studio");
@@ -569,31 +594,45 @@ impl QwenTtsApp {
         let start = std::time::Instant::now();
 
         thread::spawn(move || {
-            let elapsed = start.elapsed();
-            let result = runner.synthesize(&req);
-            let total_secs = elapsed.as_secs_f64();
-            match result {
-                Ok(SynthesisOutput::FileWritten(path)) => {
-                    log.push(format!(
-                        "Generated: {} ({:.2}s)",
-                        path.display(),
-                        total_secs
-                    ));
+            // Wrap in catch_unwind so any panic in synthesis is caught
+            // and logged rather than triggering the global panic hook.
+            let thread_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let elapsed = start.elapsed();
+                let result = runner.synthesize(&req);
+                let total_secs = elapsed.as_secs_f64();
+                match result {
+                    Ok(SynthesisOutput::FileWritten(path)) => {
+                        log.push(format!(
+                            "Generated: {} ({:.2}s)",
+                            path.display(),
+                            total_secs
+                        ));
+                    }
+                    Ok(SynthesisOutput::AudioData(samples)) => {
+                        let audio_secs = samples.len() as f64 / 24000.0;
+                        let rtf = total_secs / audio_secs.max(0.001);
+                        log.push(format!(
+                            "Generated {} samples ({:.1}s audio) in {:.2}s (RTF: {:.2}x)",
+                            samples.len(),
+                            audio_secs,
+                            total_secs,
+                            rtf
+                        ));
+                    }
+                    Err(e) => {
+                        log.push(format!("Error: {e} (after {:.2}s)", total_secs));
+                    }
                 }
-                Ok(SynthesisOutput::AudioData(samples)) => {
-                    let audio_secs = samples.len() as f64 / 24000.0;
-                    let rtf = total_secs / audio_secs.max(0.001);
-                    log.push(format!(
-                        "Generated {} samples ({:.1}s audio) in {:.2}s (RTF: {:.2}x)",
-                        samples.len(),
-                        audio_secs,
-                        total_secs,
-                        rtf
-                    ));
-                }
-                Err(e) => {
-                    log.push(format!("Error: {e} (after {:.2}s)", total_secs));
-                }
+            }));
+            if let Err(panic) = thread_result {
+                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Unknown error in synthesis thread".to_string()
+                };
+                log.push(format!("⚠ Synthesis thread error: {msg}"));
             }
             ctx_clone.request_repaint();
         });
