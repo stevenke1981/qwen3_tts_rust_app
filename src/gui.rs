@@ -37,10 +37,7 @@ fn setup_cjk_fonts(ctx: &egui::Context) {
             .insert("cjk".to_owned(), Arc::new(egui::FontData::from_owned(data)));
 
         // Prepend CJK font to every font family so CJK glyphs are found first
-        for family in &[
-            egui::FontFamily::Proportional,
-            egui::FontFamily::Monospace,
-        ] {
+        for family in &[egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             if let Some(list) = fonts.families.get_mut(family) {
                 list.insert(0, "cjk".to_owned());
             }
@@ -181,7 +178,29 @@ impl Default for QwenTtsApp {
             instruct: String::new(),
             talker_path: "models/qwen-talker-1.7b-base-Q8_0.gguf".into(),
             codec_path: "models/qwen-tokenizer-12hz-Q8_0.gguf".into(),
-            qwen_tts_bin: "qwentts.cpp/build/qwen-tts".into(),
+            #[allow(clippy::needless_update)]
+            qwen_tts_bin: {
+                #[cfg(target_os = "windows")]
+                {
+                    // Try typical CMake Release path first
+                    let candidates = [
+                        "qwentts.cpp/build/Release/qwen-tts.exe",
+                        "qwentts.cpp/build/qwen-tts.exe",
+                    ];
+                    let mut p = candidates[0].to_string();
+                    for c in &candidates {
+                        if std::path::Path::new(c).exists() {
+                            p = c.to_string();
+                            break;
+                        }
+                    }
+                    p
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    "qwentts.cpp/build/qwen-tts".into()
+                }
+            },
             output_path: "output.wav".into(),
             ref_wav_path: String::new(),
             ref_text_path: String::new(),
@@ -340,7 +359,10 @@ impl eframe::App for QwenTtsApp {
                             .min_col_width(120.0)
                             .show(ui, |ui| {
                                 ui.label("Temperature:");
-                                ui.add(egui::Slider::new(&mut self.temperature, 0.0..=2.0).step_by(0.01));
+                                ui.add(
+                                    egui::Slider::new(&mut self.temperature, 0.0..=2.0)
+                                        .step_by(0.01),
+                                );
                                 ui.end_row();
 
                                 ui.label("Top-K:");
@@ -352,7 +374,10 @@ impl eframe::App for QwenTtsApp {
                                 ui.end_row();
 
                                 ui.label("Repetition Penalty:");
-                                ui.add(egui::Slider::new(&mut self.repetition_penalty, 1.0..=2.0).step_by(0.01));
+                                ui.add(
+                                    egui::Slider::new(&mut self.repetition_penalty, 1.0..=2.0)
+                                        .step_by(0.01),
+                                );
                                 ui.end_row();
 
                                 ui.label("Seed (-1 = random):");
@@ -360,15 +385,24 @@ impl eframe::App for QwenTtsApp {
                                 ui.end_row();
 
                                 ui.label("Max New Tokens:");
-                                ui.add(egui::Slider::new(&mut self.max_new_tokens, 64..=8192).step_by(64.0));
+                                ui.add(
+                                    egui::Slider::new(&mut self.max_new_tokens, 64..=8192)
+                                        .step_by(64.0),
+                                );
                                 ui.end_row();
 
                                 // Per-mode preset info
                                 ui.label("Mode Preset:");
                                 let preset_hint = match self.mode {
-                                    SynthesisMode::Base => "Balanced: temp 0.9, top-k 50, top-p 1.0".to_string(),
-                                    SynthesisMode::CustomVoice => "Voice clone: temp 0.8, top-k 40, top-p 0.95".to_string(),
-                                    SynthesisMode::VoiceDesign => "Design: temp 1.0, top-k 60, top-p 1.0".to_string(),
+                                    SynthesisMode::Base => {
+                                        "Balanced: temp 0.9, top-k 50, top-p 1.0".to_string()
+                                    }
+                                    SynthesisMode::CustomVoice => {
+                                        "Voice clone: temp 0.8, top-k 40, top-p 0.95".to_string()
+                                    }
+                                    SynthesisMode::VoiceDesign => {
+                                        "Design: temp 1.0, top-k 60, top-p 1.0".to_string()
+                                    }
                                 };
                                 ui.label(preset_hint);
                                 ui.end_row();
@@ -483,16 +517,27 @@ impl QwenTtsApp {
             },
         };
 
-        // Try FFI first (auto-search qwen.dll in cwd), fall back to
-        // process-based runner (needs compiled qwen-tts binary).
+        // Voice cloning must use the process runner — FFI synthesize doesn't
+        // yet support ref_wav / ref_text.
+        let has_cloning = !self.ref_wav_path.is_empty() || !self.ref_text_path.is_empty();
+
         let log = self.log.clone();
-        let runner: Box<dyn Synthesizer> = runner_from(
-            None,  // let QwenLibrary::load search default paths
-            std::path::Path::new(&self.talker_path),
-            std::path::Path::new(&self.codec_path),
-            PathBuf::from(&self.qwen_tts_bin),
-            &log,
-        );
+        let runner: Box<dyn Synthesizer> = if has_cloning {
+            log.push("ℹ️ Voice cloning: using process runner (FFI does not support ref_wav/ref_text yet)".into());
+            Box::new(QwenTtsRunner {
+                qwen_tts_bin: PathBuf::from(&self.qwen_tts_bin),
+            }) as Box<dyn Synthesizer>
+        } else {
+            // Try FFI first (auto-search qwen.dll in cwd), fall back to
+            // process-based runner (needs compiled qwen-tts binary).
+            runner_from(
+                None, // let QwenLibrary::load search default paths
+                std::path::Path::new(&self.talker_path),
+                std::path::Path::new(&self.codec_path),
+                PathBuf::from(&self.qwen_tts_bin),
+                &log,
+            )
+        };
 
         let ctx_clone = ctx.clone();
         let _out_path = req.out.clone();
@@ -507,7 +552,11 @@ impl QwenTtsApp {
             let total_secs = elapsed.as_secs_f64();
             match result {
                 Ok(SynthesisOutput::FileWritten(path)) => {
-                    log.push(format!("Generated: {} ({:.2}s)", path.display(), total_secs));
+                    log.push(format!(
+                        "Generated: {} ({:.2}s)",
+                        path.display(),
+                        total_secs
+                    ));
                 }
                 Ok(SynthesisOutput::AudioData(samples)) => {
                     let audio_secs = samples.len() as f64 / 24000.0;
@@ -655,7 +704,7 @@ fn is_another_instance_running() -> bool {
             let already_exists = GetLastError() == ERROR_ALREADY_EXISTS;
             if !already_exists {
                 // Keep the handle for the process lifetime so the mutex stays alive
-                std::mem::forget(handle);
+                Box::leak(Box::new(handle));
             } else {
                 CloseHandle(handle);
             }
@@ -738,7 +787,9 @@ fn runner_from(
             Box::new(ffi) as Box<dyn Synthesizer>
         }
         Err(e) => {
-            log.push(format!("⚠️ FFI init failed (qwen.dll not found?), falling back to process runner. ({e})"));
+            log.push(format!(
+                "⚠️ FFI init failed (qwen.dll not found?), falling back to process runner. ({e})"
+            ));
             Box::new(QwenTtsRunner {
                 qwen_tts_bin: fallback_bin,
             }) as Box<dyn Synthesizer>

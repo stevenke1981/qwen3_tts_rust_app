@@ -38,16 +38,16 @@ enum Commands {
     Synth {
         #[arg(long)]
         text: String,
-        #[arg(long, default_value = "out.wav")]
-        out: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
         #[arg(long)]
         talker: Option<PathBuf>,
         #[arg(long)]
         codec: Option<PathBuf>,
         #[arg(long)]
         qwen_tts_bin: Option<PathBuf>,
-        #[arg(long, default_value = "English")]
-        lang: String,
+        #[arg(long)]
+        lang: Option<String>,
         #[arg(long)]
         speaker: Option<String>,
         #[arg(long)]
@@ -56,8 +56,8 @@ enum Commands {
         ref_wav: Option<PathBuf>,
         #[arg(long)]
         ref_text: Option<PathBuf>,
-        #[arg(long, value_enum, default_value = "auto")]
-        device: Device,
+        #[arg(long, value_enum)]
+        device: Option<Device>,
         #[arg(long, default_value = "-1")]
         /// GPU layers (-1=all, 0=CPU, N=first N layers on GPU). FFI path only.
         n_gpu_layers: i32,
@@ -201,6 +201,17 @@ fn main() -> Result<()> {
             seed,
             max_new_tokens,
         } => {
+            // Apply config defaults before hardcoded fallbacks.
+            // CLI-provided values (Some) always win over config.
+            let out_path = out.unwrap_or_else(|| cfg.output_dir.clone());
+            let lang = lang.unwrap_or_else(|| cfg.language.clone());
+            let device_val = device.unwrap_or_else(|| match cfg.device.to_lowercase().as_str() {
+                "cpu" => Device::Cpu,
+                "cuda0" => Device::Cuda0,
+                "vulkan0" => Device::Vulkan0,
+                "metal" => Device::Metal,
+                _ => Device::Auto,
+            });
             let talker_path = talker
                 .or(cfg.talker)
                 .unwrap_or_else(|| PathBuf::from("models/qwen-talker-1.7b-base-Q8_0.gguf"));
@@ -217,9 +228,29 @@ fn main() -> Result<()> {
                 downloader::ensure_default_models(models_dir, &cfg.hf_repo)?;
             }
 
+            // Voice cloning must use the process runner — FFI synthesize doesn't
+            // yet support ref_wav / ref_text.
+            let has_cloning = ref_wav.is_some() || ref_text.is_some();
+
+            // FFI auto-searches qwen.dll in cwd/build/; no separate --qwen-lib flag yet.
+            // The --qwen-tts-bin flag only affects the process-based fallback runner.
+            let custom_lib: Option<&Path> = None;
+            let fallback_bin = qwen_tts_bin
+                .clone()
+                .or(cfg.qwen_tts_bin.clone())
+                .unwrap_or_else(|| default_qwen_tts_bin());
+            let runner: Box<dyn Synthesizer> = if has_cloning {
+                eprintln!("ℹ️ Voice cloning: using process runner (FFI does not support ref_wav/ref_text yet)");
+                Box::new(QwenTtsRunner {
+                    qwen_tts_bin: fallback_bin,
+                }) as Box<dyn Synthesizer>
+            } else {
+                create_synth_runner(custom_lib, &talker_path, &codec_path, fallback_bin)
+            };
+
             let req = QwenTtsRequest {
                 text,
-                out,
+                out: out_path,
                 talker: talker_path.clone(),
                 codec: codec_path.clone(),
                 lang,
@@ -227,7 +258,7 @@ fn main() -> Result<()> {
                 instruct,
                 ref_wav,
                 ref_text,
-                ggml_backend: device.backend_str().map(str::to_string),
+                ggml_backend: device_val.backend_str().map(str::to_string),
                 n_gpu_layers,
                 tts_params: qwentts_cli::TtsParams {
                     temperature,
@@ -238,16 +269,6 @@ fn main() -> Result<()> {
                     max_new_tokens,
                 },
             };
-
-            // FFI auto-searches qwen.dll in cwd/build/; no separate --qwen-lib flag yet.
-            // The --qwen-tts-bin flag only affects the process-based fallback runner.
-            let custom_lib: Option<&Path> = None;
-            let fallback_bin = qwen_tts_bin
-                .clone()
-                .or(cfg.qwen_tts_bin.clone())
-                .unwrap_or_else(|| PathBuf::from("qwentts.cpp/build/qwen-tts"));
-            let runner: Box<dyn Synthesizer> =
-                create_synth_runner(custom_lib, &talker_path, &codec_path, fallback_bin);
 
             let output = runner.synthesize(&req)?;
             match output {
@@ -482,6 +503,28 @@ mod main_tests {
         assert!(!is_default_model_path(Path::new(
             "other-dir/qwen-talker.gguf"
         )));
+    }
+}
+
+/// Default qwen-tts binary path, aware of Windows CMake build output layout.
+fn default_qwen_tts_bin() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        // CMake --config Release places the binary at build/Release/qwen-tts.exe
+        let candidates = [
+            "qwentts.cpp/build/Release/qwen-tts.exe",
+            "qwentts.cpp/build/qwen-tts.exe",
+        ];
+        for c in &candidates {
+            if Path::new(c).exists() {
+                return PathBuf::from(c);
+            }
+        }
+        PathBuf::from(candidates[0])
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        PathBuf::from("qwentts.cpp/build/qwen-tts")
     }
 }
 

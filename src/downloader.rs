@@ -121,11 +121,11 @@ pub const DEFAULT_FILES: &[&str] = &[
 
 pub const DEFAULT_REPO: &str = "Serveurperso/Qwen3-TTS-GGUF";
 
-/// Download all default models
-pub fn download_default_models(out_dir: &Path) -> Result<Vec<PathBuf>> {
+/// Download all default models from the given repo.
+pub fn download_default_models(out_dir: &Path, repo: &str) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for file in DEFAULT_FILES {
-        let p = download_hf_file(DEFAULT_REPO, file, out_dir, DEFAULT_REVISION)?;
+        let p = download_hf_file(repo, file, out_dir, DEFAULT_REVISION)?;
         paths.push(p);
     }
     Ok(paths)
@@ -162,7 +162,7 @@ fn prompt_yes_no(prompt: &str) -> Result<bool> {
 
 /// Check whether default model files exist under `out_dir`.
 /// If any are missing, prompt the user and download them on confirmation.
-pub fn ensure_default_models(out_dir: &Path, _repo: &str) -> Result<()> {
+pub fn ensure_default_models(out_dir: &Path, repo: &str) -> Result<()> {
     let missing: Vec<&str> = DEFAULT_FILES
         .iter()
         .filter(|f| !out_dir.join(f).exists())
@@ -173,10 +173,7 @@ pub fn ensure_default_models(out_dir: &Path, _repo: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "Default model files not found in '{}':",
-        out_dir.display()
-    );
+    println!("Default model files not found in '{}':", out_dir.display());
     for f in &missing {
         println!("  - {f}");
     }
@@ -188,7 +185,7 @@ pub fn ensure_default_models(out_dir: &Path, _repo: &str) -> Result<()> {
         );
     }
 
-    let paths = download_default_models(out_dir)?;
+    let paths = download_default_models(out_dir, repo)?;
     print_summary(&paths);
     Ok(())
 }

@@ -7,7 +7,9 @@ use std::{
 };
 
 /// Advanced TTS generation parameters with sensible defaults.
+/// Fields appear "unused" in process-only builds but are consumed by FFI.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct TtsParams {
     pub temperature: f32,
     pub top_k: i32,
@@ -49,8 +51,10 @@ pub struct QwenTtsRequest {
     pub ggml_backend: Option<String>,
     /// GPU layer count (-1 = all, 0 = CPU, N = first N layers on GPU).
     /// Used by FFI path (qwen.dll ABI v3); CLI process path ignores this.
+    #[allow(dead_code)]
     pub n_gpu_layers: i32,
     /// Advanced synthesis parameters (temperature, top_k, etc.)
+    #[allow(dead_code)]
     pub tts_params: TtsParams,
 }
 
@@ -64,6 +68,8 @@ pub enum SynthesisOutput {
     /// A WAV file was written to the given path.
     FileWritten(PathBuf),
     /// Raw PCM audio samples (f32 mono, 24 kHz).
+    /// Only constructed by FFI path (`features = "ffi"`).
+    #[allow(dead_code)]
     AudioData(Vec<f32>),
 }
 

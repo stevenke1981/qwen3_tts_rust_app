@@ -36,6 +36,7 @@ pub(crate) enum QtStatus {
 /// Log severity.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum QtLogLevel {
     Debug = 0,
     Info = 1,
@@ -128,6 +129,7 @@ type FnQtNumCodebooks = unsafe extern "C" fn(*const QtContext) -> i32;
 type FnQtDurationSecToTokens = unsafe extern "C" fn(*const QtContext, f32) -> i32;
 type FnQtNSpeakers = unsafe extern "C" fn(*const QtContext) -> i32;
 type FnQtSpeakerName = unsafe extern "C" fn(*const QtContext, i32) -> *const i8;
+#[allow(dead_code)]
 type FnQtLogSet = unsafe extern "C" fn(
     Option<unsafe extern "C" fn(QtLogLevel, *const i8, *mut std::ffi::c_void)>,
     *mut std::ffi::c_void,
@@ -186,6 +188,7 @@ pub(crate) struct QwenLibrary {
     _lib: Library,
 
     // Cache loaded function pointers (copied out of Symbol<Fn>)
+    #[allow(dead_code)]
     qt_version: FnQtVersion,
     qt_last_error: FnQtLastError,
     qt_init_default_params: FnQtInitDefaultParams,
@@ -194,9 +197,13 @@ pub(crate) struct QwenLibrary {
     qt_audio_free: FnQtAudioFree,
     qt_tts_default_params: FnQtTtsDefaultParams,
     qt_synthesize: FnQtSynthesize,
+    #[allow(dead_code)]
     qt_num_codebooks: FnQtNumCodebooks,
+    #[allow(dead_code)]
     qt_duration_sec_to_tokens: FnQtDurationSecToTokens,
+    #[allow(dead_code)]
     qt_n_speakers: FnQtNSpeakers,
+    #[allow(dead_code)]
     qt_speaker_name: FnQtSpeakerName,
 }
 
@@ -291,6 +298,7 @@ impl QwenLibrary {
     }
 
     /// Return the library version string.
+    #[allow(dead_code)]
     pub fn version(&self) -> &str {
         unsafe {
             let ptr = (self.qt_version)();
@@ -327,7 +335,7 @@ impl QwenLibrary {
             .map_err(|_| QwenFfiError::InvalidParams("backend contains null byte".into()))?;
 
         let mut params = QtInitParamsRaw {
-            abi_version: 3,          // QT_ABI_VERSION
+            abi_version: 3, // QT_ABI_VERSION
             talker_path: talker_c.as_ptr(),
             codec_path: codec_c.as_ptr(),
             use_fa,
@@ -581,7 +589,9 @@ unsafe extern "C" fn audio_chunk_trampoline(
 /// FFI-based synthesizer using the qwen shared library.
 pub struct QwenFfiRunner {
     lib: QwenLibrary,
+    #[allow(dead_code)]
     talker_path: PathBuf,
+    #[allow(dead_code)]
     codec_path: PathBuf,
 }
 
@@ -601,6 +611,7 @@ impl QwenFfiRunner {
     }
 
     /// Check whether qwen library can be loaded (probing).
+    #[allow(dead_code)]
     pub fn is_available(lib_path: Option<&Path>) -> bool {
         QwenLibrary::load(lib_path).is_ok()
     }
@@ -639,8 +650,8 @@ impl super::qwentts_cli::Synthesizer for QwenFfiRunner {
                 &codec_str,
                 true,
                 false,
-                req.ggml_backend.as_deref(),  // GPU backend selection
-                req.n_gpu_layers,             // -1 = all, 0 = CPU, N = partial
+                req.ggml_backend.as_deref(), // GPU backend selection
+                req.n_gpu_layers,            // -1 = all, 0 = CPU, N = partial
             )
             .map_err(|e| anyhow::anyhow!("qwen init failed: {e}"))?;
 
@@ -651,8 +662,8 @@ impl super::qwentts_cli::Synthesizer for QwenFfiRunner {
                 Some(&req.lang),
                 req.instruct.as_deref(),
                 req.speaker.as_deref(),
-                req.tts_params.seed,  // -1 = random seed
-                None, // buffered mode (no streaming callback)
+                req.tts_params.seed, // -1 = random seed
+                None,                // buffered mode (no streaming callback)
                 Some(&req.tts_params),
             )?;
 
