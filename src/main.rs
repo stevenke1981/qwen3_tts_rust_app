@@ -1,10 +1,26 @@
-// On Windows GUI builds, suppress the console window so double-click
-// doesn't flash a cmd window. CLI output still works in a terminal.
-#![cfg_attr(feature = "gui", windows_subsystem = "windows")]
+// We compile as a console-subsystem binary so CLI commands (synth, inspect,
+// download) always have working stdout/stderr. GUI mode hides the console
+// window immediately on startup via ShowWindow(SW_HIDE).
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
+
+// ── Windows: hide console window (used by GUI mode) ──────────────
+#[cfg(all(target_os = "windows", feature = "gui"))]
+fn hide_console_window() {
+    extern "system" {
+        fn GetConsoleWindow() -> *mut std::ffi::c_void;
+        fn ShowWindow(hWnd: *mut std::ffi::c_void, nCmdShow: i32) -> i32;
+    }
+    const SW_HIDE: i32 = 0;
+    unsafe {
+        let hwnd = GetConsoleWindow();
+        if !hwnd.is_null() {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
 
 // ── GUI-only: show errors in a message box (no console) ─────────
 #[cfg(feature = "gui")]
@@ -223,41 +239,43 @@ fn is_default_model_path(path: &Path) -> bool {
 }
 
 fn main() {
-    // ── GUI-only: install panic hook & catch errors ─────────────
+    // Parse CLI args first so we know GUI vs CLI mode.
+    // Do this before anything else so --help and parse errors always
+    // produce visible output (console is not hidden yet).
+    let cli = Cli::parse();
+
+    // ── GUI mode: hide console + install panic hook ──
     #[cfg(feature = "gui")]
-    {
+    let is_gui = cli.command.is_none();
+    #[cfg(feature = "gui")]
+    if is_gui {
+        hide_console_window();
         error_dialog::install_panic_hook();
-        match run_inner() {
-            Ok(()) => {}
-            Err(e) => {
-                error_dialog::show_and_wait(
-                    "Qwen3-TTS Studio — Error",
-                    &format!(
-                        "The application encountered an error and must close.\n\n{}",
-                        e
-                    ),
-                );
-                eprintln!("[FATAL] {:?}", e);
-                std::process::exit(1);
-            }
-        }
     }
-    #[cfg(not(feature = "gui"))]
-    {
-        if let Err(e) = run_inner() {
-            eprintln!("{}: error: {:?}", env!("CARGO_PKG_NAME"), e);
+
+    // ── Execute command, then handle errors ──
+    if let Err(e) = run_command(cli) {
+        // GUI mode: show error dialog
+        #[cfg(feature = "gui")]
+        if is_gui {
+            error_dialog::show_and_wait(
+                "Qwen3-TTS Studio — Error",
+                &format!("The application encountered an error:\n\n{}", e),
+            );
             std::process::exit(1);
         }
+        // CLI mode (both with and without gui feature): stderr
+        eprintln!("{}: error: {:?}", env!("CARGO_PKG_NAME"), e);
+        std::process::exit(1);
     }
 }
 
-/// Inner logic separated so GUI builds can catch errors and show a dialog.
-fn run_inner() -> Result<()> {
+/// Load config, determine command, and execute it.
+fn run_command(cli: Cli) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let cli = Cli::parse();
     let cfg = AppConfig::load_or_default(&cli.config)?;
 
     match cli.command.unwrap_or_else(|| {
