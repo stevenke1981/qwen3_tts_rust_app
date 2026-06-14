@@ -413,8 +413,10 @@ impl QwenTtsApp {
             n_gpu_layers: self.n_gpu_layers,
         };
 
+        // Try FFI first (auto-search qwen.dll in cwd), fall back to
+        // process-based runner (needs compiled qwen-tts binary).
         let runner: Box<dyn Synthesizer> = runner_from(
-            Some(std::path::Path::new(&self.qwen_tts_bin)),
+            None,  // let QwenLibrary::load search default paths
             std::path::Path::new(&self.talker_path),
             std::path::Path::new(&self.codec_path),
             PathBuf::from(&self.qwen_tts_bin),

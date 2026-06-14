@@ -213,7 +213,9 @@ fn main() -> Result<()> {
                 n_gpu_layers,
             };
 
-            let custom_lib = qwen_tts_bin.as_deref();
+            // FFI auto-searches qwen.dll in cwd/build/; no separate --qwen-lib flag yet.
+            // The --qwen-tts-bin flag only affects the process-based fallback runner.
+            let custom_lib: Option<&Path> = None;
             let fallback_bin = qwen_tts_bin
                 .clone()
                 .or(cfg.qwen_tts_bin.clone())
