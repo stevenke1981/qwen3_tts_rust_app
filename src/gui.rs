@@ -151,6 +151,7 @@ struct QwenTtsApp {
     ref_text_path: String,
     device: String,
     n_gpu_layers: i32,
+    available_devices: Vec<String>,
 
     // --- State ---
     mode: SynthesisMode,
@@ -179,6 +180,7 @@ impl Default for QwenTtsApp {
             ref_text_path: String::new(),
             device: "auto".into(),
             n_gpu_layers: -1,
+            available_devices: Vec::new(),
             mode: SynthesisMode::Base,
             is_generating: false,
             log: LogCollector::new(),
@@ -260,15 +262,9 @@ impl eframe::App for QwenTtsApp {
                         egui::ComboBox::from_id_salt("device")
                             .selected_text(&self.device)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.device, "auto".to_string(), "Auto");
-                                ui.selectable_value(&mut self.device, "CPU".to_string(), "CPU");
-                                ui.selectable_value(&mut self.device, "CUDA0".to_string(), "CUDA0");
-                                ui.selectable_value(
-                                    &mut self.device,
-                                    "Vulkan0".to_string(),
-                                    "Vulkan0",
-                                );
-                                ui.selectable_value(&mut self.device, "Metal".to_string(), "Metal");
+                                for d in &self.available_devices {
+                                    ui.selectable_value(&mut self.device, d.clone(), d);
+                                }
                             });
                         ui.end_row();
 
@@ -415,19 +411,20 @@ impl QwenTtsApp {
 
         // Try FFI first (auto-search qwen.dll in cwd), fall back to
         // process-based runner (needs compiled qwen-tts binary).
+        let log = self.log.clone();
         let runner: Box<dyn Synthesizer> = runner_from(
             None,  // let QwenLibrary::load search default paths
             std::path::Path::new(&self.talker_path),
             std::path::Path::new(&self.codec_path),
             PathBuf::from(&self.qwen_tts_bin),
+            &log,
         );
 
-        let log = self.log.clone();
         let ctx_clone = ctx.clone();
         let _out_path = req.out.clone();
 
         self.is_generating = true;
-        self.log.push("Starting generation...".into());
+        log.push("Starting generation...".into());
 
         thread::spawn(move || {
             let result = runner.synthesize(&req);
@@ -492,6 +489,17 @@ impl QwenTtsApp {
 
 /// Run the GUI application
 pub fn run_gui(cfg: AppConfig) -> Result<()> {
+    // ── Single-instance check ──
+    if is_another_instance_running() {
+        anyhow::bail!(
+            "Another Qwen3-TTS Studio window is already open.\n\
+             Only one instance is allowed."
+        );
+    }
+
+    // ── Probe available devices ──
+    let available = probe_available_devices();
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
@@ -510,6 +518,18 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
     if let Some(codec) = cfg.codec {
         app.codec_path = codec.to_string_lossy().to_string();
     }
+    app.available_devices = available;
+    app.log.push(format!(
+        "Available devices: {}",
+        app.available_devices.join(", ")
+    ));
+    // If the only devices are "auto" and "CPU", warn about missing GPU
+    if app.available_devices.len() <= 2 {
+        app.log.push(
+            "ℹ️ Only CPU detected. For GPU acceleration, install NVIDIA CUDA or Vulkan drivers."
+                .into(),
+        );
+    }
 
     eframe::run_native(
         "Qwen3-TTS Studio",
@@ -523,6 +543,99 @@ pub fn run_gui(cfg: AppConfig) -> Result<()> {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// Single-instance lock (Windows named mutex)
+// ═══════════════════════════════════════════════════════════════
+
+/// Check if another GUI instance is already running.
+/// Uses a Windows named mutex; on non-Windows, always returns false.
+fn is_another_instance_running() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        extern "system" {
+            fn CreateMutexW(
+                lpMutexAttributes: *const std::ffi::c_void,
+                bInitialOwner: i32,
+                lpName: *const u16,
+            ) -> *mut std::ffi::c_void;
+            fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
+            fn GetLastError() -> u32;
+        }
+
+        const ERROR_ALREADY_EXISTS: u32 = 183;
+        // Use a well-known name to prevent conflicts with other apps
+        let name: Vec<u16> = "Local\\Qwen3-TTS-Studio-InstanceLock\0"
+            .encode_utf16()
+            .collect();
+        unsafe {
+            let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+            if handle.is_null() {
+                return false; // can't check, allow launch
+            }
+            let already_exists = GetLastError() == ERROR_ALREADY_EXISTS;
+            if !already_exists {
+                // Keep the handle for the process lifetime so the mutex stays alive
+                std::mem::forget(handle);
+            } else {
+                CloseHandle(handle);
+            }
+            already_exists
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    false
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GPU device probing (OS-level DLL detection)
+// ═══════════════════════════════════════════════════════════════
+
+/// Probe available GGML backends by checking for GPU driver DLLs.
+/// Always includes CPU as a fallback.
+fn probe_available_devices() -> Vec<String> {
+    let mut devices = Vec::new();
+    devices.push("auto".to_string());
+    devices.push("CPU".to_string());
+
+    #[cfg(target_os = "windows")]
+    {
+        if has_system_dll("nvcuda.dll") {
+            // NVIDIA CUDA driver present → CUDA backend should work
+            // Try to detect multiple GPUs (optional, just report CUDA0)
+            devices.push("CUDA0".to_string());
+        }
+        if has_system_dll("vulkan-1.dll") {
+            devices.push("Vulkan0".to_string());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        devices.push("Metal".to_string());
+    }
+
+    devices
+}
+
+/// Check whether a given system DLL can be loaded (indicating the driver exists).
+#[cfg(target_os = "windows")]
+fn has_system_dll(name: &str) -> bool {
+    use std::ffi::CString;
+    extern "system" {
+        fn LoadLibraryA(lpLibFileName: *const i8) -> *mut std::ffi::c_void;
+        fn FreeLibrary(hLibModule: *mut std::ffi::c_void) -> i32;
+    }
+    let cname = CString::new(name).unwrap();
+    unsafe {
+        let handle = LoadLibraryA(cname.as_ptr());
+        if !handle.is_null() {
+            FreeLibrary(handle);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Synthesizer runner factory
 // ═══════════════════════════════════════════════════════════════
 
@@ -532,16 +645,23 @@ fn runner_from(
     talker_path: &std::path::Path,
     codec_path: &std::path::Path,
     fallback_bin: PathBuf,
+    log: &LogCollector,
 ) -> Box<dyn Synthesizer> {
     match QwenFfiRunner::try_new(
         lib_path,
         talker_path.to_path_buf(),
         codec_path.to_path_buf(),
     ) {
-        Ok(ffi) => Box::new(ffi) as Box<dyn Synthesizer>,
-        Err(_) => Box::new(QwenTtsRunner {
-            qwen_tts_bin: fallback_bin,
-        }) as Box<dyn Synthesizer>,
+        Ok(ffi) => {
+            log.push("✅ Using qwen.dll (FFI path)".into());
+            Box::new(ffi) as Box<dyn Synthesizer>
+        }
+        Err(e) => {
+            log.push(format!("⚠️ FFI init failed (qwen.dll not found?), falling back to process runner. ({e})"));
+            Box::new(QwenTtsRunner {
+                qwen_tts_bin: fallback_bin,
+            }) as Box<dyn Synthesizer>
+        }
     }
 }
 
@@ -551,6 +671,7 @@ fn runner_from(
     _talker_path: &std::path::Path,
     _codec_path: &std::path::Path,
     fallback_bin: PathBuf,
+    _log: &LogCollector,
 ) -> Box<dyn Synthesizer> {
     Box::new(QwenTtsRunner {
         qwen_tts_bin: fallback_bin,
